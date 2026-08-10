@@ -9,8 +9,12 @@
 </p>
 
 <p align="center">
-  <a href="README.md">中文</a>
+  <a href="README.md">Simplified Chinese</a>
   ·
+  <strong>English</strong>
+</p>
+
+<p align="center">
   <a href="https://github.com/socekin/TransPodcast/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/socekin/TransPodcast/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://github.com/socekin/TransPodcast/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/socekin/TransPodcast/actions/workflows/codeql.yml/badge.svg" /></a>
   <a href="LICENSE.md"><img alt="License: PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue" /></a>
