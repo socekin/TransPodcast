@@ -1,0 +1,63 @@
+[project]
+name = "transpodcast"
+version = "0.1.0"
+description = "A private, local-first podcast translation service."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "alembic>=1.16,<2",
+  "boto3>=1.40,<2",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "modal[api-proxy-support]>=1.2,<2",
+  "pillow>=11.3,<13",
+  "pydantic-settings>=2.10,<3",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.35,<1",
+  "yt-dlp[default]>=2026.7.4,<2027",
+]
+
+[project.scripts]
+transpodcast-api = "transpodcast.server:main"
+transpodcast-modal-pipeline = "transpodcast.modal_pipeline:main"
+transpodcast-modal-router = "transpodcast.modal_router:main"
+transpodcast-worker = "transpodcast.worker:main"
+
+[dependency-groups]
+dev = [
+  "boto3-stubs[s3]>=1.40,<2",
+  "detect-secrets>=1.5,<2",
+  "httpx2>=2.7,<3",
+  "mypy>=1.17,<2",
+  "pip-audit>=2.9,<3",
+  "pytest>=9.0.3,<10",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/transpodcast"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+filterwarnings = [
+  "error::ResourceWarning",
+  "error::pytest.PytestUnraisableExceptionWarning",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["transpodcast"]

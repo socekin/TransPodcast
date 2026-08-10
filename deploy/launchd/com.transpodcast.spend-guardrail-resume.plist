@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.transpodcast.spend-guardrail-resume</string>
+  <!-- Lifts the persisted Spend Guardrail pause once per billing month so
+       processing resumes after the Modal free-credit reset. The endpoint
+       is idempotent; if every Modal Account is still depleted, the first
+       routed operation re-enters the pause and re-notifies the Owner. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/curl</string>
+    <string>-fsS</string>
+    <string>-X</string>
+    <string>POST</string>
+    <string>http://127.0.0.1:8000/api/v1/spend-guardrail:resume</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>5</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>__TRANSPODCAST_ROOT__/data/logs/spend-guardrail-resume.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__TRANSPODCAST_ROOT__/data/logs/spend-guardrail-resume.stderr.log</string>
+</dict>
+</plist>
