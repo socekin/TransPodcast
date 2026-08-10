@@ -1,0 +1,19 @@
+{
+  "candidate_recommendation.reason_line": "推荐理由：{reason}",
+  "candidate_recommendation.original_title_line": "原标题：{title}",
+  "candidate_recommendation.source_channel_line": "来源频道：{channel}",
+  "candidate_recommendation.source_url_line": "原节目：{url}",
+  "candidate_recommendation.process_action": "开始完整处理",
+  "candidate_recommendation.ignore_action": "忽略",
+  "publication_decision.quality_passed": "本期成品已通过全部质量检查。",
+  "publication_decision.quality_summary": "音频质量：{codec} · {sample_rate_khz} kHz · {channels} 声道",
+  "publication_decision.preview_url": "试听链接（7 天内有效）：{url}",
+  "publication_decision.preview_owner_console": "试听：请在本地 Web 节目库中打开。",
+  "publication_decision.publish_action": "发布",
+  "publication_decision.decline_action": "不发布",
+  "publication_decision.recorded": "发布决定已记录",
+  "publication_decision.outcome.publish": "已发布",
+  "publication_decision.outcome.do_not_publish": "不发布",
+  "publication_decision.owner_console_hint": "你可以在 Web 节目库中查看最新状态。",
+  "publication_metadata.placeholder_pattern": "待填写|待补充|占位|请填写|工作表指令|复制(?:以上|下方)指令|\\[[^\\]]*(?:填写|占位)[^\\]]*\\]"
+}

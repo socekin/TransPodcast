@@ -1,0 +1,42 @@
+{
+  "name": "owner-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/prepare-sites-build.mjs",
+    "generate:api": "uv run python ../../scripts/export_openapi.py .generated/openapi.json && openapi --input .generated/openapi.json --output src/lib/generated --client fetch --exportCore false --exportServices false --indent 2 && node scripts/normalize-generated-api.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test:sites": "node --test tests/sites-worker.test.mjs"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.6.0",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.27.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "react-markdown": "^10.1.0",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "5.0.4",
+    "jsdom": "^30.0.0",
+    "openapi-typescript-codegen": "^0.31.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "6.4.3",
+    "vitest": "^4.1.10"
+  }
+}
