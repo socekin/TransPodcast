@@ -59,9 +59,9 @@ at adapter boundaries and validate it before changing workflow state.
    credential handling changes.
 6. Update documentation and `CHANGELOG.md` for user-visible changes.
 
-Do not run live YouTube, Codex, Modal, Cloudflare, R2, Telegram, or TTS actions
-unless the maintainer explicitly requests them and confirms expected cost and
-data scope.
+Do not run live YouTube, Codex, Claude Code, Modal, Cloudflare, R2, Telegram,
+or TTS actions unless the maintainer explicitly requests them and confirms
+expected cost and data scope.
 
 ## Generated code and migrations
 

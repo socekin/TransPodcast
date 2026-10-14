@@ -713,7 +713,7 @@ describe("TransPodcast Host navigation", () => {
             JSON.stringify({
               ready: true,
               services: {
-                codex: true,
+                agent: true,
                 modal: true,
                 cloudflare: true,
                 telegram: false,
@@ -745,6 +745,7 @@ describe("TransPodcast Host navigation", () => {
           return new Response(
             JSON.stringify({
               automation,
+              speech: { model: "indextts2" },
               retention: {
                 intermediate_days: 7,
                 operational_log_days: 7,
@@ -777,6 +778,18 @@ describe("TransPodcast Host navigation", () => {
       })
     ).toBeInTheDocument();
     expect(
+      screen.getByRole("heading", { name: copy.settings.speechTitle })
+    ).toBeInTheDocument();
+    const speechModel = screen.getByRole("combobox", {
+      name: copy.settings.speechModel
+    });
+    expect(speechModel).toHaveTextContent(/^IndexTTS 2\.0$/);
+    await user.click(speechModel);
+    expect(
+      await screen.findByRole("option", { name: "IndexTTS 2.5" })
+    ).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(
       screen.getByRole("heading", { name: copy.settings.subscription })
     ).toBeInTheDocument();
     expect(
@@ -800,6 +813,112 @@ describe("TransPodcast Host navigation", () => {
       })
     );
     expect(screen.getByRole("status")).toHaveTextContent(copy.settings.saved);
+  });
+
+  it("selects the processing Agent next to the speech model", async () => {
+    let savedUpdate: Record<string, unknown> | null = null;
+    let selectedProvider: "codex" | "claude" = "codex";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/v1/setup-readiness") {
+          return new Response(
+            JSON.stringify({
+              ready: true,
+              services: {
+                agent: true,
+                modal: true,
+                cloudflare: true,
+                telegram: true,
+                private_feed: true
+              },
+              details: {},
+              agent: {
+                provider: selectedProvider,
+                ready: true,
+                providers: {
+                  codex: {
+                    configured: true,
+                    ready: true,
+                    identity: "codex-cli",
+                    cli_version: "codex-cli 0.160.0",
+                    auth_method: "ChatGPT"
+                  },
+                  claude: {
+                    configured: true,
+                    ready: false,
+                    identity: "claude-code",
+                    cli_version: "",
+                    auth_method: ""
+                  }
+                }
+              }
+            }),
+            { status: 200 }
+          );
+        }
+        if (url === "/api/v1/settings") {
+          if (init?.method === "PATCH") {
+            savedUpdate = JSON.parse(String(init.body));
+            selectedProvider =
+              (savedUpdate?.agent_provider as "codex" | "claude") ??
+              selectedProvider;
+          }
+          return new Response(
+            JSON.stringify({
+              ...ownerSettingsPayload(true),
+              speech: { model: "indextts2" },
+              agent: {
+                provider: selectedProvider,
+                readiness: { codex: "configured", claude: "missing" }
+              }
+            }),
+            { status: 200 }
+          );
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      })
+    );
+    const user = userEvent.setup();
+    render(<App initialView="settings" />);
+
+    const agent = await screen.findByRole("combobox", {
+      name: copy.settings.agentProvider
+    });
+    expect(agent).toHaveTextContent(/^Codex$/);
+    expect(
+      screen.getByText(copy.settings.agentSelected(copy.settings.agentCodex))
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        copy.settings.agentCliStatus(copy.settings.ready, copy.settings.missing)
+      )
+    ).toBeInTheDocument();
+
+    await user.click(agent);
+    await user.click(
+      await screen.findByRole("option", { name: copy.settings.agentClaude })
+    );
+    expect(agent).toHaveTextContent(/^Claude$/);
+    await user.click(
+      screen.getByRole("button", { name: copy.settings.saveSpeech })
+    );
+
+    await waitFor(() =>
+      expect(savedUpdate).toEqual({
+        speech_model: "indextts2",
+        agent_provider: "claude"
+      })
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      copy.settings.speechSaved
+    );
+    expect(
+      await screen.findByText(
+        copy.settings.agentSelected(copy.settings.agentClaude)
+      )
+    ).toBeInTheDocument();
   });
 
   it("keeps publication owner-controlled", async () => {

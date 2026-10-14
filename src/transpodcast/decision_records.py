@@ -30,8 +30,11 @@ DECISION_RECORD_KINDS = frozenset(
         "ownership-adjudication",
         "speaker-tail-boundary-repair",
         "speaker-boundary-adjudication",
+        "speaker-ownership-adjudication",
+        "natural-segmentation-boundary",
         "reference-selection",
         "segment-attribution",
+        "span-identity",
         "fallback",
     }
 )

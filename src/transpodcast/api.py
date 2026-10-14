@@ -11,6 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, HttpUrl
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from transpodcast.adapters.agent import AgentProvider
 from transpodcast.dependencies import AppDependencies
 from transpodcast.domain import (
     ChannelMode,
@@ -198,6 +199,8 @@ class SettingsUpdate(BaseModel):
     manual_processing: bool | None = None
     auto_discovery: bool | None = None
     notification_preferences: dict[str, bool] | None = None
+    speech_model: Literal["indextts2", "indextts25"] | None = None
+    agent_provider: AgentProvider | None = None
 
 
 class SourceChannelUpdate(BaseModel):
@@ -415,6 +418,7 @@ class PipelineTechnicalEvidenceResponse(BaseModel):
     modal_account: str | None = None
     modal_route: list[str] = Field(default_factory=list)
     parallel_operations: dict[str, float] | None = None
+    cli_version: str | None = None
 
 
 class ProcessingPipelineStepResponse(BaseModel):

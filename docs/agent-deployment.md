@@ -50,7 +50,10 @@ will run.
 - `make setup` and `make check` pass without live providers.
 - `.env` exists locally and is not tracked by Git.
 - `codex --version` and `codex login status` succeed for the same macOS user
-  that runs TransPodcast.
+  that runs TransPodcast, or Claude Code is installed, `claude auth status`
+  reports a subscription sign-in, and Claude is selected in Settings.
+- Google Chrome or another Chromium-based browser is available at
+  `TRANSPODCAST_YOUTUBE_BROWSER_EXECUTABLE`.
 - Modal apps are deployed under the intended environment.
 - `TRANSPODCAST_MODAL_COMMAND` selects the direct pipeline for one account or
   the router for multiple accounts.

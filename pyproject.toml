@@ -1,6 +1,6 @@
 [project]
 name = "transpodcast"
-version = "0.1.0"
+version = "0.2.0"
 description = "A private, local-first podcast translation service."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -15,6 +15,7 @@ dependencies = [
   "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.35,<1",
   "yt-dlp[default]>=2026.7.4,<2027",
+  "yt-dlp-getpot-wpc==1.1.2",
 ]
 
 [project.scripts]

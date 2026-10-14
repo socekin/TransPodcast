@@ -153,7 +153,9 @@ def test_quality_retry_reuses_artifact_that_passes_the_updated_gate(
     monkeypatch.setattr(
         TransPodcastService,
         "_validate_speech",
-        staticmethod(lambda speech, expected_segments: None),
+        staticmethod(
+            lambda speech, expected_segments, **_validation_options: None
+        ),
     )
 
     retried = client.post(

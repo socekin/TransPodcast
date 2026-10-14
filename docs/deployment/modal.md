@@ -152,7 +152,11 @@ transpodcast-pipeline-indextts2
 ```
 
 The billing command must return valid JSON for each profile. Every readiness
-result must contain `"ready": true` and list all four components. The direct
+result must contain `"ready": true` and list all five components: the
+IndexTTS application provides both the IndexTTS 2.0 and IndexTTS 2.5 renderer
+classes. `listening_audit.available` should also be `true`; when it is
+`false`, redeploy the applications so the Listening Audit methods exist. A
+missing audit does not block rendering, but its findings are unavailable. The direct
 pipeline command checks application metadata for one profile at a time; it does
 not process episode media or start a GPU speech stage. If billing data is
 unavailable, the router records that condition and still attempts the profile;

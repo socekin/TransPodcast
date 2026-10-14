@@ -21,6 +21,29 @@ If a custom executable is configured, confirm it is an executable path. Do not
 put authentication tokens in `.env` unless the provider explicitly requires
 that mechanism.
 
+## Claude Code is reported unavailable
+
+Claude Code is required only when it is the selected processing Agent. Run
+`claude --version` and `claude auth status` as the same macOS user that runs
+TransPodcast. TransPodcast ignores `ANTHROPIC_API_KEY`, so sign in with a
+Claude subscription account. If the CLI is signed in but still unavailable,
+update it: TransPodcast requires the CLI flags that isolate it from personal
+settings, MCP servers, skills, and hooks.
+
+## A run reports a different Agent provider
+
+Each Processing Run keeps the Agent provider it started with. A Translation
+Project created by one provider cannot resume under another. Changing the
+setting affects new runs; reprocess the complete episode to move an existing
+run to the newly selected provider.
+
+## A run waits after the Listening Audit
+
+Severe Listening Audit findings are re-rendered once automatically. If a severe
+finding remains, the run enters the Review Queue. Listen to the listed units in
+Processing Detail, then confirm to continue or revise the affected segments. An
+unavailable audit is shown but never blocks publication.
+
 ## Modal commands fail
 
 Verify the selected Modal profile and environment, deploy the pinned apps, and
@@ -33,7 +56,9 @@ not retried as generic transient work.
 ## YouTube discovery or archive fails
 
 Confirm the source is public, accessible without cookies, and authorized for
-your use. Update the locked `yt-dlp` dependency if the source platform changed,
+your use. Source downloads need a local Chromium-based browser: install Google
+Chrome or set `TRANSPODCAST_YOUTUBE_BROWSER_EXECUTABLE` to another browser
+executable. Update the locked `yt-dlp` dependency if the source platform changed,
 then rerun the focused adapter tests. Do not work around access controls by
 committing cookies or account exports.
 

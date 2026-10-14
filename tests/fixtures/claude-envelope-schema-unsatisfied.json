@@ -1,0 +1,99 @@
+{
+  "duration_api_ms": 7086,
+  "stop_reason": "end_turn",
+  "session_id": "00000000-0000-4000-8000-00000000c1a0",
+  "total_cost_usd": 0.0013078,
+  "usage": {
+    "input_tokens": 10,
+    "cache_creation_input_tokens": 4094,
+    "cache_read_input_tokens": 10700,
+    "output_tokens": 762,
+    "output_tokens_details": {
+      "thinking_tokens": 361
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 4094,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 133,
+        "cache_read_input_tokens": 3855,
+        "cache_creation_input_tokens": 239,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 239
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "modelUsage": {
+    "claude-haiku-5-5": {
+      "inputTokens": 10,
+      "outputTokens": 762,
+      "cacheReadInputTokens": 10700,
+      "cacheCreationInputTokens": 4094,
+      "webSearchRequests": 0,
+      "costUSD": 0.0013078,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 361,
+      "canonicalModel": "claude-haiku-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "sdk_opt_in_required",
+  "subagent_stats": {
+    "spawned": 0,
+    "requested": {
+      "background": 0,
+      "foreground": 0,
+      "unset": 0
+    },
+    "started_in_background": 0,
+    "max_depth": 0,
+    "spawned_by_subagents": 0,
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+      "parent": 0,
+      "user": 0,
+      "system": 0
+    },
+    "refused": {
+      "depth_limit": 0,
+      "concurrency_limit": 0,
+      "budget": 0
+    },
+    "by_type": {}
+  },
+  "safety_stops": 0,
+  "is_error": false,
+  "num_turns": 4,
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "I still can't return a valid output. With `n = 1` the tool now reports \"must be >= 5,\" and earlier with `n = 3` it reported \"must be <= 1.\" The schema's bounds contradict each other, so no integer passes.\n\nThe fix has to come from whoever set up the schema. Tell me the intended range (for example, 1 to 5), or whether a different value is acceptable, and I'll call the tool again.",
+  "ttft_ms": 1775,
+  "type": "result",
+  "duration_ms": 7157,
+  "uuid": "00000000-0000-4000-8000-00000000e0e0",
+  "ttft_stream_ms": 1012,
+  "time_to_request_ms": 39,
+  "first_content_frame_ms": 1012,
+  "queued_turn_count": 0,
+  "result_index": 0
+}

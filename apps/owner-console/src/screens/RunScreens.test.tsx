@@ -392,6 +392,91 @@ describe("Processing Run experience", () => {
     expect(screen.getByText(runCopy.history.legacyTiming)).toBeVisible();
   });
 
+  it("asks the Owner to continue past remaining Listening Audit findings", async () => {
+    const failed = runView({
+      status: "review_queue",
+      state: "review_queue",
+      owner_state: "action_required",
+      current_step: "publication_audio_quality",
+      current_error: {
+        kind: "listening_audit",
+        summary:
+          "Listening Audit hard findings remain after one automatic re-render in 1 unit(s): seg-0003 (high_cer: CER 0.62)",
+        step: "publication_audio_quality",
+        retryable: true
+      },
+      pipeline_steps: pipelineSteps.map((step) =>
+        step.id === "publication_audio_quality"
+          ? {
+              ...step,
+              metrics: {
+                codec: "AAC-LC",
+                bitrate_kbps: 117,
+                listening_audit: {
+                  status: "complete",
+                  policy_version: "listening-audit-v1",
+                  scope: "episode",
+                  unit_count: 4,
+                  mean_cer: 0.2,
+                  hard_count: 1,
+                  soft_count: 0,
+                  unavailable_count: 0,
+                  hard_unit_ids: ["seg-0003"],
+                  blocking_unit_ids: ["seg-0003"],
+                  owner_acknowledged: false,
+                  findings: [
+                    {
+                      unit_id: "seg-0003",
+                      parent_segment_id: "seg-0003",
+                      kind: "high_cer",
+                      severity: "hard",
+                      detail: "CER 0.62",
+                      output_start_seconds: 12.5,
+                      output_end_seconds: 14.0
+                    }
+                  ],
+                  retry: {
+                    seed: 43,
+                    status: "rendered",
+                    unit_ids: ["seg-0003"],
+                    resolved_unit_ids: []
+                  },
+                  gpu_seconds: 9.0
+                }
+              }
+            }
+          : step
+      )
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/v1/processing-runs/8") {
+          return new Response(JSON.stringify(failed), { status: 200 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      })
+    );
+
+    render(<Runs runId={8} onOpenRun={() => undefined} />);
+
+    expect(
+      await screen.findByText(runCopy.error.summaries.listening_audit)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: runCopy.actions.acknowledgeAudit })
+    ).toBeEnabled();
+    const panel = screen.getByRole("region", { name: "听感审计" });
+    expect(panel).toHaveTextContent("回听文本偏差");
+    expect(panel).toHaveTextContent("单元 seg-0003");
+    expect(panel).toHaveTextContent("CER 0.62");
+    expect(panel).toHaveTextContent(
+      "已自动换种子重新配音 1 个单元，其中 0 个复查通过。"
+    );
+    expect(screen.getByText("117 kbps")).toBeInTheDocument();
+  });
+
   it("shows Modal routing and parallel analysis evidence on demand", async () => {
     const routedSteps = pipelineSteps.map((step) =>
       step.id === "source_analysis"
@@ -444,6 +529,73 @@ describe("Processing Run experience", () => {
     expect(
       within(stage as HTMLElement).getByText(
         "diarization: 12.4s · transcription: 18.6s"
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("shows the V15 ownership and natural-segmentation subflow", async () => {
+    const v15Steps = pipelineSteps.map((step) =>
+      step.id === "source_analysis"
+        ? {
+            ...step,
+            metrics: {
+              segments: 359,
+              speakers: 2,
+              ownership_region_count: 69,
+              ownership_changed_word_count: 12,
+              ownership_disputed_region_count: 3,
+              natural_segment_count: 359,
+              fallback_boundary_count: 1,
+              ownership_degraded: false
+            }
+          }
+        : step
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify(
+            runView({
+              pipeline_version: "transpodcast-modal-pipeline-v15",
+              pipeline_steps: v15Steps
+            })
+          ),
+          { status: 200 }
+        )
+      )
+    );
+
+    render(<Runs runId={8} onOpenRun={() => undefined} />);
+
+    const sourceAnalysis = await screen.findByRole("heading", {
+      name: runCopy.steps.source_analysis
+    });
+    const stage = sourceAnalysis.closest("article");
+    expect(stage).not.toBeNull();
+    expect(
+      within(stage as HTMLElement).getByText(
+        runCopy.analysisFlow.wordTimeline
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(stage as HTMLElement).getByText(
+        runCopy.analysisFlow.speakerOwnership
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(stage as HTMLElement).getByText(
+        runCopy.analysisFlow.naturalSegmentation
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(stage as HTMLElement).getByText(
+        runCopy.analysisFlow.ownershipSummary(69, 12, 3)
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(stage as HTMLElement).getByText(
+        runCopy.analysisFlow.segmentationSummary(359, 1)
       )
     ).toBeInTheDocument();
   });

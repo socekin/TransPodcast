@@ -16,7 +16,7 @@ review decisions, monitor Processing Runs, and manage publications.
 _Avoid_: Cloud control plane
 
 **Setup Readiness**:
-The verified state in which Codex, the dedicated Modal Environment, Cloudflare publication resources, the Private Feed, and at least one Source Channel are configured. Telegram is reported separately as an optional notification channel and never blocks background processing or Web publication.
+The verified state in which the selected Agent Provider's CLI, the dedicated Modal Environment, Cloudflare publication resources, the Private Feed, and at least one Source Channel are configured. The `agent` entry reports the selected Agent Provider and the status of both Agent CLIs (Codex and Claude Code); only the selected one blocks readiness. Telegram is reported separately as an optional notification channel and never blocks background processing or Web publication.
 _Avoid_: Application health, onboarding progress, Processing Run status
 
 **Owner Notification**:
@@ -221,7 +221,8 @@ _Avoid_: Raw transcript, ASR output, captions
 **Source Analysis Canonicalization**:
 The retired v8 experiment that changed segmentation and listening behavior.
 V9 and later replace it with Episode-local Speaker Consolidation and Boundary
-Ownership Adjudication wrapped around the shared v6 word-grouping rules.
+Ownership Adjudication wrapped around the shared v6 word-grouping rules. Its
+code was removed in v0.2.0; any stored payload is historical data only.
 _Avoid_: Model inference, Speaker Registry matching, transcript editing
 
 **Speech Pipeline V9**:
@@ -229,24 +230,26 @@ The historical Speech Pipeline identified as `transpodcast-modal-pipeline-v9`.
 It established the production baseline that preserves v6 pacing,
 segmentation, rendering, and mastering while applying Episode-local Speaker
 Consolidation, Boundary Ownership Adjudication, and audited Voice Reference
-selection. Its exact release remains reproducible under ADR-0021.
+selection (ADR-0021). Its stored runs remain readable as historical data; its
+worker path was retired in v0.2.0 and survives only in version history.
 _Avoid_: v8 Source Analysis Canonicalization, calibration path, optional trust layer
 
 **Speech Pipeline V10**:
-The production Speech Pipeline identified as `transpodcast-modal-pipeline-v10`.
+The historical Speech Pipeline identified as `transpodcast-modal-pipeline-v10`.
 It preserves every V9/v6 segment, timing, rendering, and mastering behavior
 while expanding only Boundary Ownership Adjudication candidate coverage and
 adopting a clear Codex discourse decision when it conflicts with a fragment
-voiceprint. It has no runtime feature gates; rollback is a code deployment
-defined by ADR-0026.
+voiceprint. It had no runtime feature gates (ADR-0026). Its stored runs are
+historical data only; the worker path was retired in v0.2.0.
 _Avoid_: translation revision, resegmentation, all-segment adjudication
 
 **Speech Pipeline V11**:
 The historical Speech Pipeline identified as `transpodcast-modal-pipeline-v11`.
 It preserves the V10/v6 listening baseline and adds bounded Tail-to-Next
 Speaker Boundary Repair before translation. It retains an episode-level
-ten-percent candidate guard and six-repair ceiling so unfinished V11 runs and
-Decision Records remain reproducible under ADR-0028.
+ten-percent candidate guard and six-repair ceiling (ADR-0028). Its stored
+runs and Decision Records are historical data only; the worker path was
+retired in v0.2.0.
 _Avoid_: active Pipeline Version, broad resegmentation, new diarization model
 
 **Speech Pipeline V12**:
@@ -255,7 +258,8 @@ It upgrades the pinned diarizer to Streaming Sortformer v2.1 and preserves the
 V11/V10/v6 listening baseline. Every Tail-to-Next Speaker Boundary Repair
 candidate must still pass the complete individual acoustic, duration,
 adjacency, ownership, and discourse contract, but no episode-level ratio or
-accepted-repair count can discard independently qualified work.
+accepted-repair count can discard independently qualified work. Its stored
+runs are historical data only.
 _Avoid_: broad resegmentation, all-boundary adjudication, voiceprint-model upgrade
 
 **Speech Pipeline V13**:
@@ -264,17 +268,117 @@ It preserves the complete V12 model and listening baseline while making
 Boundary Ownership Adjudication continuity-first and applying compatible
 Tail-to-Next Speaker Boundary Repair chains atomically per local connected
 component. One local failure preserves only that component; unrelated valid
-repairs still apply. V13 has no runtime feature flag.
+repairs still apply. V13 had no runtime feature flag. Its stored runs are
+historical data only.
 _Avoid_: new segmentation model, broad resegmentation, translation revision
 
 **Speech Pipeline V14**:
-The production Speech Pipeline identified as `transpodcast-modal-pipeline-v14`.
+The historical Speech Pipeline identified as `transpodcast-modal-pipeline-v14`.
 It preserves the complete V13 model and listening baseline while replacing
 sequential whole-segment ownership and tail-repair questions with Unified
 Speaker Boundary Adjudication over one immutable Canonical Transcript
-snapshot. V14 has no runtime feature flag; rollback is an explicit V13 code
-deployment under ADR-0031.
+snapshot (ADR-0031). Its stored runs are historical data only; its worker path
+was retired in v0.2.0 and survives only in version history.
 _Avoid_: new acoustic model, all-boundary adjudication, new TTS unit
+
+**Speech Pipeline V15**:
+The historical Speech Pipeline identified as
+`transpodcast-modal-pipeline-v15`. It assigns conserved word spans to established
+episode-local Speakers before final Canonical Transcript segmentation, then
+uses sentence completion, audible pauses, Source Events, and bounded duration
+as deterministic Natural Segmentation evidence. Independent Planner and
+Reviewer mutations may continue as disputed work; malformed plans and failed
+batches preserve only their bounded Speaker Ownership Risk Regions. Hidden
+Render Plan units may split an overlong target only at an approved natural
+boundary without multiplying Canonical Transcript segments. V15 has no
+runtime feature flag. The V14 worker path was removed in
+v0.2.0.
+_Avoid_: new diarization model, invented Crosstalk text, visible TTS-only segment
+
+**Speech Pipeline V16**:
+The supported Owner-selectable Speech Pipeline identified as
+`transpodcast-modal-pipeline-v16`. It inherits V15 Source Analysis, translation,
+content editing, Render Plan, voice references, assembly, mastering, and
+Quality Gates while replacing only the speech renderer with pinned IndexTTS
+2.5 and a versioned render-only pronunciation policy. The Owner setting
+selects V15 or V16 when a new Processing Run is created or the Owner explicitly
+requests a full-episode reprocess. The selected Pipeline Version remains frozen
+for ordinary retries, resumes, and Segment Revisions. V15 was the default
+when V16 was introduced; later releases replace the new-Run selection mapping.
+_Avoid_: candidate renderer, Translation Artifact rewrite, dynamic mid-run model switch
+
+**Speech Pipeline V17 / V18**:
+The previous Speech Pipelines identified as `transpodcast-modal-pipeline-v17` with
+IndexTTS 2.0 and `transpodcast-modal-pipeline-v18` with IndexTTS 2.5. Both use V17
+Source Analysis and final-Reviewer ownership with expanded following turns,
+localized voiceprints, conditional scope-edge review, and durable role checkpoints.
+The Owner's speech-model choice selects the renderer for a new Run; ordinary
+retries and revisions keep the recorded version. Historical V15/V16 remain
+available. Unresolved short-response identity remains explicit disputed evidence;
+complete detected-region coverage is not an accuracy guarantee.
+_Avoid_: guaranteed overlap accuracy, renderer-default change, historical reprocessing
+
+**Speech Pipeline V21 / V22**:
+The current Speech Pipelines for new Runs:
+`transpodcast-modal-pipeline-v21` with IndexTTS 2.0 and
+`transpodcast-modal-pipeline-v22` with IndexTTS 2.5. They keep every V19/V20
+rendering feature. They use V21 Source Analysis: deterministic ownership,
+dense voiceprints, Sparse-Label Merge, and the Span Identity Check before the
+unchanged Agent ownership layer. New Translation Projects use the listening
+translation policy.
+_Avoid_: reprocessed history, discourse-only ownership, new diarizer
+
+**Span Identity Check**:
+The V21 rule that relabels an owner run of at least 3 s as a whole when the
+dense voiceprint windows inside it consistently favour another established
+Speaker. It corrects whole-span diarization label errors before risk regions
+are built and records a Decision Record for each relabel.
+_Avoid_: boundary repair, Speaker Registry merge, LLM ownership
+
+**Sparse-Label Merge**:
+The V21 rule that merges a diarization label with at most two turns and 3 s
+of speech into the established Speaker its fragment voiceprint favours by a
+margin. It never invents a Speaker and keeps the label when evidence is weak.
+_Avoid_: Episode-local Speaker Consolidation threshold change, forced Speaker count
+
+**Speech Pipeline V19 / V20**:
+The previous Speech Pipelines:
+`transpodcast-modal-pipeline-v19` with IndexTTS 2.0 and
+`transpodcast-modal-pipeline-v20` with IndexTTS 2.5. They keep V17 Source
+Analysis and add the Rhythm Policy, the Unit Clip Store, full-band
+post-ownership Voice References, Emotion Reference hygiene, and the Listening
+Audit. V21/V22 add deterministic ownership.
+_Avoid_: reprocessed history, new diarizer, translation change
+
+**Rhythm Policy**:
+The versioned assembly rule that restores source pacing. It trims each unit
+clip's edge silence and maps each source gap to an output pause, with
+separate clamps for the same Speaker and for Speaker changes. A Content Edit
+removal becomes a fixed transition. It bounds short-reply stretching and caps
+silence inside a unit. It never changes speech rendering.
+_Avoid_: TTS duration control, timestamp alignment, mastering
+
+**Unit Clip Store**:
+The local, content-addressed store of raw rendered unit clips and their
+manifests for one Processing Run. Assembly and Segment Revisions master from it
+once. It is an intermediate with the local retention policy unless pinned.
+_Avoid_: Publication Audio, render cache, State Backup
+
+**Listening Audit**:
+The automatic post-render check of every unit, using Mandarin
+back-transcription, speech-rate and silence bounds, and voice consistency. A
+hard finding is re-rendered once; a remaining one requires the Owner's Review
+Queue decision. Soft findings are listed only.
+_Avoid_: human review, Quality Gate replacement, translation review
+
+**Speaker Ownership Risk Region**:
+A bounded word-index span around a Speaker transition, Crosstalk, repeated
+handoff, sparse label, or conflicting acoustic evidence. V15 sends these
+regions to independent ownership judgments in deterministic request-size
+batches. A region permits only established episode-local Speakers and retains
+immutable words, timestamps, context, acoustics, and voiceprint evidence in
+its Decision Record.
+_Avoid_: Review Queue item, arbitrary transcript window, ASR retry request
 
 **Episode-local Speaker Consolidation**:
 The evidence-gated mapping of multiple raw diarization labels to one Speaker
@@ -287,7 +391,7 @@ _Avoid_: Speaker Registry merge, Channel Speaker Profile match, expected Speaker
 The retired v7 Source Analysis step that corrected weak, short-lived
 episode-local word-to-Speaker changes with deterministic lexical rules. It
 is no longer part of the active pipeline; Boundary Ownership Adjudication
-supersedes it (ADR-0019).
+supersedes it (ADR-0019), and its code was removed in v0.2.0.
 _Avoid_: Transcript editing, Speaker Registry merge, new attribution model
 
 **Boundary Ownership Adjudication**:
@@ -305,6 +409,8 @@ The V13 discourse question treats the initial owner as untrusted and compares
 deterministic adjacent-owner reconstructions before deciding.
 V14 retains its candidate evidence inside Unified Speaker Boundary
 Adjudication but does not apply this whole-segment policy as a separate step.
+Since V15 the candidates and fragment voiceprints are evidence for Speaker
+Ownership Risk Regions only. The two-judge verdict engine was retired in v0.2.0; its V9-V13 Decision Records remain historical data.
 _Avoid_: V14 active application, Speaker Boundary Stabilization, Review Queue entry
 
 **Mixed-Speaker Segment Split Adjudication**:
@@ -315,7 +421,7 @@ current listening requirement.
 _Avoid_: production behavior, Tail-to-Next Speaker Boundary Repair
 
 **Tail-to-Next Speaker Boundary Repair**:
-The V11-and-later decision that moves one short, clearly misowned suffix from
+The V11-V13 decision that moves one short, clearly misowned suffix from
 the current Canonical Transcript segment to the beginning of its immediately
 following differently owned segment. Persisted acoustic evidence selects a
 bounded pair for review; Codex decides `keep`, `shift_tail`, or `unsure`. A
@@ -327,6 +433,7 @@ atomic plan. Invalid components roll back locally while independent valid
 components remain applied.
 V14 retains its acoustic candidate evidence inside Unified Speaker Boundary
 Adjudication but does not apply this bounded policy as a separate step.
+Its code was retired in v0.2.0; stored repairs remain historical data.
 _Avoid_: V14 active application, general resegmentation, overlap reconstruction
 
 **Unified Speaker Boundary Adjudication**:
@@ -339,7 +446,8 @@ keeps segment IDs and count stable, and conserves every word, timestamp, and
 order. Acoustic and voiceprint results are evidence rather than hard vetoes.
 Third-Speaker evidence, multiple internal handoffs, incompatible connected
 actions, malformed output, provider degradation, or uncertainty preserves the
-affected component.
+affected component. Its code was retired in v0.2.0; stored V14 decisions
+remain historical data.
 _Avoid_: all-segment review, new diarization pass, transcript rewriting
 
 **Decision Record**:
@@ -407,6 +515,10 @@ _Avoid_: Translation model, Codex CLI, LLM
 The replaceable boundary that invokes a Translation Agent provider and converts its structured result and usage data into a Translation Artifact.
 _Avoid_: Translation Agent, prompt, subprocess
 
+**Agent Provider**:
+The locally signed-in Agent CLI that serves TransPodcast's Agent work: `codex` (recorded as `codex-cli`, the default) or `claude` (Claude Code, recorded as `claude-code`). The Owner selects it in Settings. Each Processing Run freezes the selection when it is queued or explicitly reprocessed, and every Agent call of that run uses it: Translation Project Author and Reviewer, Speaker ownership Planner and Reviewer, single-segment retranslation, and Publication Metadata backfill. Triage is run-independent and uses the current selection. A Translation Project never resumes a session created by another Agent Provider.
+_Avoid_: Model, LLM, Translation Agent
+
 **Speaker**:
 A distinct person in a source video whose translated speech must remain distinguishable from every other person.
 _Avoid_: Host, narrator, voice
@@ -428,7 +540,7 @@ A newly detected or ambiguously matched Speaker kept separate until the Owner co
 _Avoid_: Unknown error, diarization label, guest
 
 **Voice Fidelity**:
-The recognizable continuity of a Speaker's timbre and speaking character in a Translated Episode; it does not require matching the source timing or lip movements.
+The recognizable continuity of a Speaker's timbre, speaking character, and conversational pacing (pauses and turn-taking rhythm) in a Translated Episode. It follows source pauses through the Rhythm Policy but does not require word-level timing or lip movements.
 _Avoid_: Lip sync, exact voice copy
 
 **Canonical Voice Reference**:
@@ -467,7 +579,7 @@ An append-only owner-facing lifecycle record for meaningful Processing Run trans
 _Avoid_: Operational Log, Processing Attempt, console refresh event
 
 **Pipeline Version**:
-The immutable set of speech-model revisions, runtime images, policies, and assembly settings used by a Processing Run. The locally installed Codex CLI is not pinned, but its observed CLI and model identities are recorded separately.
+The immutable set of speech-model revisions, runtime images, policies, and assembly settings used by a Processing Run. The locally installed Agent CLI is not pinned, but its observed provider, CLI, and model identities are recorded separately.
 _Avoid_: Application version, latest models, Processing Run
 
 **Translation Baseline**:

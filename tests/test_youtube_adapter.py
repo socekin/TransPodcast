@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import io
+import subprocess
+from pathlib import Path
 
 import httpx
 from PIL import Image
 
 from transpodcast.adapters.youtube import YtDlpSourceAdapter
+from transpodcast.config import TransPodcastSettings
+from transpodcast.production import build_dependencies
 
 
 def _png() -> bytes:
@@ -149,3 +153,105 @@ def test_youtube_proxy_is_passed_to_caption_requests(
 
     assert captured_proxy == "http://127.0.0.1:6152"
     assert candidate.captions == "captions"
+
+
+def test_source_archive_uses_browser_po_token_provider(
+    monkeypatch,
+) -> None:
+    captured_command: list[str] = []
+
+    def successful_run(
+        command: list[str], **_kwargs
+    ) -> subprocess.CompletedProcess[str]:
+        captured_command.extend(command)
+        output_root = Path(command[command.index("--paths") + 1])
+        (output_root / "source.m4a").write_bytes(b"archived audio")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("subprocess.run", successful_run)
+    browser = Path(
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
+    source = YtDlpSourceAdapter(browser_executable=browser)
+    candidate = source._candidate(
+        {"id": "video-archive", "title": "Archive source"}
+    )
+
+    archive = source.archive(candidate)
+
+    extractor_args = [
+        captured_command[index + 1]
+        for index, argument in enumerate(captured_command)
+        if argument == "--extractor-args"
+    ]
+    assert extractor_args == [
+        "youtube:player_client=mweb",
+        f"youtubepot-wpc:browser_path={browser}",
+    ]
+    assert archive.content == b"archived audio"
+    assert archive.extension == "m4a"
+
+
+def test_metadata_requests_do_not_launch_browser_po_token_provider(
+    monkeypatch,
+) -> None:
+    captured_command: list[str] = []
+
+    def successful_run(
+        command: list[str], **_kwargs
+    ) -> subprocess.CompletedProcess[str]:
+        captured_command.extend(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            (
+                '{"channel_id":"UC_TEST","channel":"Test",'
+                '"channel_url":"https://www.youtube.com/@test"}'
+            ),
+            "",
+        )
+
+    monkeypatch.setattr("subprocess.run", successful_run)
+    source = YtDlpSourceAdapter(
+        browser_executable=Path(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        )
+    )
+
+    source.resolve_channel("https://www.youtube.com/@test")
+
+    assert "--extractor-args" not in captured_command
+
+
+def test_source_readiness_requires_an_executable_browser(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda _executable: "/bin/yt-dlp")
+    missing_browser = tmp_path / "missing-browser"
+    available_browser = tmp_path / "available-browser"
+    available_browser.write_text("browser")
+    available_browser.chmod(0o755)
+
+    assert not YtDlpSourceAdapter(
+        browser_executable=missing_browser
+    ).readiness()
+    assert YtDlpSourceAdapter(
+        browser_executable=available_browser
+    ).readiness()
+
+
+def test_production_dependencies_use_the_configured_youtube_browser(
+    tmp_path: Path,
+) -> None:
+    browser = tmp_path / "configured-browser"
+    settings = TransPodcastSettings(
+        _env_file=None,
+        database_path=tmp_path / "transpodcast.sqlite3",
+        youtube_browser_executable=browser,
+    )
+
+    source = build_dependencies(settings).source
+
+    assert isinstance(source, YtDlpSourceAdapter)
+    assert source.browser_executable == browser

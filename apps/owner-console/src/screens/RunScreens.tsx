@@ -11,10 +11,12 @@ import {
 } from "lucide-react";
 import { useCallback, useState } from "react";
 
+import { ListeningAuditPanel } from "../components/ListeningAudit";
 import { Badge, Button, Card } from "../components/ui";
 import { runCopy } from "../i18n/runs";
 import {
   api,
+  asListeningAudit,
   type ApiRun,
   type ApiRunAttempt,
   type ApiRunSummary
@@ -294,7 +296,13 @@ function RunDetail({
                 step.state === "completed" ? (
                   <p>{runCopy.progress.unavailable}</p>
                 ) : null}
+                {step.id === "source_analysis" ? (
+                  <AnalysisFlow metrics={step.metrics} />
+                ) : null}
                 <StepMetrics metrics={step.metrics} />
+                {step.id === "publication_audio_quality" ? (
+                  <StepListeningAudit metrics={step.metrics} />
+                ) : null}
                 {step.id === "translation_authoring" &&
                 run.translation_project ? (
                   <p>
@@ -343,6 +351,12 @@ function RunDetail({
                               ? step.technical_evidence.model.join(" · ")
                               : step.technical_evidence.model}
                           </dd>
+                        </div>
+                      ) : null}
+                      {step.technical_evidence.cli_version ? (
+                        <div>
+                          <dt>CLI</dt>
+                          <dd>{step.technical_evidence.cli_version}</dd>
                         </div>
                       ) : null}
                       {step.technical_evidence.modal_account ? (
@@ -436,7 +450,9 @@ function RunDetail({
                     <RotateCcw size={14} aria-hidden="true" />
                     {retrying
                       ? runCopy.actions.retrying
-                      : runCopy.actions.retry}
+                      : run.current_error.kind === "listening_audit"
+                        ? runCopy.actions.acknowledgeAudit
+                        : runCopy.actions.retry}
                   </Button>
                   {actionError ? (
                     <p className="run-action-error">{actionError}</p>
@@ -642,7 +658,11 @@ function AttemptRow({ attempt }: { attempt: ApiRunAttempt }) {
 
 function StepMetrics({ metrics }: { metrics: Record<string, unknown> }) {
   const entries = Object.entries(metrics).filter(
-    ([, value]) => value !== null && value !== undefined
+    ([key, value]) =>
+      value !== null &&
+      value !== undefined &&
+      !ANALYSIS_FLOW_METRICS.has(key) &&
+      key !== "listening_audit"
   );
   if (entries.length === 0) {
     return null;
@@ -659,6 +679,100 @@ function StepMetrics({ metrics }: { metrics: Record<string, unknown> }) {
       ))}
     </dl>
   );
+}
+
+function StepListeningAudit({
+  metrics
+}: {
+  metrics: Record<string, unknown>;
+}) {
+  const audit = asListeningAudit(metrics.listening_audit);
+  return audit ? <ListeningAuditPanel audit={audit} /> : null;
+}
+
+const ANALYSIS_FLOW_METRICS = new Set([
+  "ownership_region_count",
+  "ownership_changed_word_count",
+  "ownership_disputed_region_count",
+  "natural_segment_count",
+  "fallback_boundary_count",
+  "ownership_degraded"
+]);
+
+function AnalysisFlow({ metrics }: { metrics: Record<string, unknown> }) {
+  const regions = metricNumber(metrics.ownership_region_count);
+  const changedWords = metricNumber(metrics.ownership_changed_word_count);
+  const disputedRegions = metricNumber(
+    metrics.ownership_disputed_region_count
+  );
+  const segments = metricNumber(metrics.natural_segment_count);
+  const fallbackBoundaries = metricNumber(metrics.fallback_boundary_count);
+  if (
+    regions === null ||
+    changedWords === null ||
+    disputedRegions === null ||
+    segments === null ||
+    fallbackBoundaries === null
+  ) {
+    return null;
+  }
+  return (
+    <section
+      className={cn(
+        "run-analysis-flow",
+        metrics.ownership_degraded === true && "is-degraded"
+      )}
+      aria-label={runCopy.analysisFlow.title}
+    >
+      <div className="run-analysis-flow-heading">
+        <strong>{runCopy.analysisFlow.title}</strong>
+        {metrics.ownership_degraded === true ? (
+          <span>
+            <AlertCircle size={12} aria-hidden="true" />
+            {runCopy.analysisFlow.degraded}
+          </span>
+        ) : null}
+      </div>
+      <ol>
+        <li>
+          <span className="run-analysis-flow-index">1</span>
+          <div>
+            <strong>{runCopy.analysisFlow.wordTimeline}</strong>
+            <small>{runCopy.analysisFlow.wordTimelineHint}</small>
+          </div>
+        </li>
+        <li>
+          <span className="run-analysis-flow-index">2</span>
+          <div>
+            <strong>{runCopy.analysisFlow.speakerOwnership}</strong>
+            <small>
+              {runCopy.analysisFlow.ownershipSummary(
+                regions,
+                changedWords,
+                disputedRegions
+              )}
+            </small>
+          </div>
+        </li>
+        <li>
+          <span className="run-analysis-flow-index">3</span>
+          <div>
+            <strong>{runCopy.analysisFlow.naturalSegmentation}</strong>
+            <small>
+              {runCopy.analysisFlow.segmentationSummary(
+                segments,
+                fallbackBoundaries
+              )}
+            </small>
+          </div>
+        </li>
+      </ol>
+    </section>
+  );
+}
+
+function metricNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function RunStateIcon({ state }: { state: string }) {

@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from transpodcast.boundary_adjudication import (
-    DiscourseAdjudicationResult,
-    OwnershipDispute,
-)
+from transpodcast.adapters.agent import AGENT_PROVIDERS, DEFAULT_AGENT_PROVIDER
 from transpodcast.database import Database
 from transpodcast.domain import (
     ChannelResolution,
@@ -25,15 +22,9 @@ from transpodcast.domain import (
     TranslationResult,
     TriageResult,
 )
-from transpodcast.speaker_boundary_adjudication import (
-    BoundaryPlanningResult,
-    BoundaryProposal,
-    BoundaryReviewResult,
-    UnifiedBoundaryCandidate,
-)
-from transpodcast.speaker_tail_boundary_repair import (
-    SpeakerTailRepairCandidate,
-    SpeakerTailRepairResult,
+from transpodcast.speaker_ownership_v15 import (
+    SpeakerOwnershipPlanningResult,
+    SpeakerOwnershipRegion,
 )
 
 
@@ -88,6 +79,11 @@ class TriageAdapter(Protocol):
 class SourceAnalysisAdapter(Protocol):
     def readiness(self) -> bool: ...
 
+    def measure_ownership(
+        self, analysis: SourceAnalysisResult, archive: SourceArchive,
+        ranges: list[tuple[int, int]],
+    ) -> dict[str, Any]: ...
+
     def analyze(
         self,
         candidate: SourceCandidate,
@@ -113,30 +109,30 @@ class TranslationAdapter(Protocol):
         current: TranslationResult,
     ) -> PublicationMetadataResult: ...
 
-    def adjudicate_discourse(
-        self,
-        disputes: Sequence[OwnershipDispute],
-    ) -> DiscourseAdjudicationResult: ...
+    def plan_ownership_continuity(
+        self, regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult: ...
 
-    def adjudicate_speaker_tail_repairs(
-        self,
-        candidates: Sequence[SpeakerTailRepairCandidate],
-    ) -> SpeakerTailRepairResult: ...
+    def review_ownership_continuity(
+        self, regions: Sequence[SpeakerOwnershipRegion],
+        planning: SpeakerOwnershipPlanningResult,
+    ) -> SpeakerOwnershipPlanningResult: ...
 
-    def plan_speaker_boundaries(
+    def plan_speaker_ownership(
         self,
-        candidates: Sequence[UnifiedBoundaryCandidate],
-    ) -> BoundaryPlanningResult: ...
+        regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult: ...
 
-    def review_speaker_boundaries(
+    def review_speaker_ownership(
         self,
-        candidates: Sequence[UnifiedBoundaryCandidate],
-        proposals: dict[str, BoundaryProposal | None],
-    ) -> BoundaryReviewResult: ...
+        regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult: ...
 
 
 class SpeechAdapter(Protocol):
     def readiness(self) -> bool: ...
+
+    def listening_audit_readiness(self) -> bool: ...
 
     def render(
         self,
@@ -237,3 +233,45 @@ class AppDependencies:
     analysis: SourceAnalysisAdapter | None = None
     feed_token_path: Path | None = None
     speaker_match_policy: SpeakerMatchPolicy = SpeakerMatchPolicy()
+    # ``translation`` and ``triage`` serve the default Agent provider
+    # (Codex). Other providers are keyed by provider name; a provider that
+    # is absent here is not configured.
+    agent_translations: Mapping[str, TranslationAdapter] = field(
+        default_factory=dict
+    )
+    agent_triage: Mapping[str, TriageAdapter] = field(default_factory=dict)
+
+    def translation_for(self, provider: str | None) -> TranslationAdapter:
+        """The Translation Adapter of an Agent provider; NULL means Codex."""
+        resolved = provider or DEFAULT_AGENT_PROVIDER
+        adapter = self.agent_translations.get(resolved)
+        if adapter is not None:
+            return adapter
+        if resolved == DEFAULT_AGENT_PROVIDER:
+            return self.translation
+        raise AgentProviderNotConfiguredError(
+            f"Agent provider {resolved} is not configured"
+        )
+
+    def triage_for(self, provider: str | None) -> TriageAdapter:
+        resolved = provider or DEFAULT_AGENT_PROVIDER
+        adapter = self.agent_triage.get(resolved)
+        if adapter is not None:
+            return adapter
+        if resolved == DEFAULT_AGENT_PROVIDER:
+            return self.triage
+        raise AgentProviderNotConfiguredError(
+            f"Agent provider {resolved} is not configured"
+        )
+
+    def configured_agent_providers(self) -> tuple[str, ...]:
+        return tuple(
+            provider
+            for provider in AGENT_PROVIDERS
+            if provider == DEFAULT_AGENT_PROVIDER
+            or provider in self.agent_translations
+        )
+
+
+class AgentProviderNotConfiguredError(RuntimeError):
+    """The selected or frozen Agent provider has no adapter."""

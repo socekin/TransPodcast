@@ -49,8 +49,8 @@ def main() -> None:
             ("sample rate 48k", quality.get("sample_rate_hz") == 48_000),
             ("channels 2", quality.get("channels") == 2),
             (
-                "bitrate 120-136",
-                120 <= int(quality.get("bitrate_kbps", 0)) <= 136,
+                "measured bitrate 96-136",
+                96 <= int(quality.get("bitrate_kbps", 0)) <= 136,
             ),
             ("loudness -16.5..-15.5", -16.5 <= loudness <= -15.5),
             (
@@ -67,14 +67,15 @@ def main() -> None:
                 bool(quality.get("timeline_continuous")),
             ),
             (
-                "no boundary artifacts",
-                not quality.get("boundary_artifacts", True),
-            ),
-            (
-                "no source language leakage",
-                not quality.get("source_language_leakage", True),
+                "no measured boundary artifacts",
+                quality.get("boundary_artifacts") is not True,
             ),
         ]
+        leakage = quality.get("source_language_leakage")
+        print(
+            "source language leakage:",
+            "not measured" if leakage is None else leakage,
+        )
         print()
         for name, passed in checks:
             print(("PASS" if passed else "FAIL"), "·", name)

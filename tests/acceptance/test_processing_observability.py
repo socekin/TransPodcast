@@ -97,6 +97,17 @@ class RoutedSpeechAdapter(FakeSpeechAdapter):
     ) -> SpeechResult:
         return replace(
             super().render(candidate, translation),
+            render_model="IndexTeam/IndexTTS-2.5",
+            render_settings_json=json.dumps(
+                {
+                    "pronunciation_policy_version": (
+                        "indextts25-pronunciation-v2"
+                    ),
+                    "pronunciation_annotation_count": 12,
+                    "pronunciation_fallback_count": 1,
+                    "chinese_replacement_count": 2,
+                }
+            ),
             routing_json=(
                 '{"operation":"render","selected_profile":"transpodcast",'
                 '"attempts":[{"profile":"transpodcast",'
@@ -233,6 +244,18 @@ def test_every_stage_records_a_durable_timed_attempt(tmp_path) -> None:
         "transcription": 2.4,
     }
     assert pipeline["voice_render"]["metrics"]["rendered_segments"] > 0
+    assert pipeline["voice_render"]["metrics"].get(
+        "pronunciation_policy_version"
+    ) == "indextts25-pronunciation-v2"
+    assert pipeline["voice_render"]["metrics"].get(
+        "pronunciation_annotation_count"
+    ) == 12
+    assert pipeline["voice_render"]["metrics"].get(
+        "pronunciation_fallback_count"
+    ) == 1
+    assert pipeline["voice_render"]["metrics"].get(
+        "chinese_replacement_count"
+    ) == 2
     assert (
         pipeline["source_analysis"]["technical_evidence"]["modal_account"]
         == "transpodcast-secondary"
@@ -336,12 +359,12 @@ def test_analysis_checkpoint_retry_keeps_routing_on_original_attempt(
     original = TransPodcastService._complete_boundary_adjudication
     calls = 0
 
-    def fail_local_completion_once(self, session, run, analysis):
+    def fail_local_completion_once(self, session, run, analysis, archive):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("Local adjudication failed")
-        return original(self, session, run, analysis)
+        return original(self, session, run, analysis, archive)
 
     monkeypatch.setattr(
         TransPodcastService,

@@ -21,6 +21,7 @@ import type {
   ProcessingRunsResponse,
   SourceChannelResponse,
   SourceChannelResolutionResponse,
+  SettingsUpdate,
   SourceResolutionResponse,
   VoiceReferencePreviewResponse
 } from "./generated";
@@ -68,6 +69,51 @@ export type ApiPublicationPresentationField =
   | "chapters"
   | "artwork";
 
+export type ApiListeningAuditFinding = {
+  unit_id: string;
+  parent_segment_id: string | null;
+  kind: string;
+  severity: string;
+  detail: string;
+  output_start_seconds: number | null;
+  output_end_seconds: number | null;
+};
+
+export type ApiListeningAuditSummary = {
+  status: string;
+  policy_version: string | null;
+  scope: string | null;
+  unit_count: number | null;
+  mean_cer: number | null;
+  hard_count: number;
+  soft_count: number;
+  unavailable_count: number;
+  hard_unit_ids: string[];
+  blocking_unit_ids: string[];
+  owner_acknowledged: boolean;
+  findings: ApiListeningAuditFinding[];
+  retry: {
+    seed: number | null;
+    status: string | null;
+    unit_ids: string[] | null;
+    resolved_unit_ids: string[] | null;
+  } | null;
+  gpu_seconds: number | null;
+};
+
+export function asListeningAudit(
+  value: unknown
+): ApiListeningAuditSummary | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const candidate = value as Partial<ApiListeningAuditSummary>;
+  return Array.isArray(candidate.findings) &&
+    typeof candidate.status === "string"
+    ? (candidate as ApiListeningAuditSummary)
+    : null;
+}
+
 export type ApiProcessingSegment = {
   ordinal: number;
   segment_id: string;
@@ -92,6 +138,7 @@ export type ApiProcessingSegment = {
     rationale: string;
     evidence_segment_ids: string[];
   } | null;
+  listening_audit_findings?: ApiListeningAuditFinding[];
   counterpart_speaker: {
     id: number;
     display_name: string;
@@ -112,6 +159,29 @@ export type ApiProcessingSegment = {
       shift_before_word_index?: number | null;
       current_owner?: string | null;
       next_owner?: string | null;
+      voiceprint_evidence?: Array<{
+        owner: string;
+        scores: Record<string, number>;
+      }>;
+      planner_plan?: {
+        action: string;
+        rationale: string;
+      } | null;
+      reviewer_plan?: {
+        action: string;
+        rationale: string;
+      } | null;
+      applied_plan?: {
+        action: string;
+        rationale: string;
+        assignments: Array<{
+          first_word_index: number;
+          last_word_index: number;
+          speaker_label: string;
+        }>;
+      } | null;
+      applied_plan_source?: string | null;
+      acoustic_conflict?: boolean;
     };
   } | null;
 };
@@ -139,6 +209,19 @@ export type ApiProcessingDetail = {
       provider_degraded_component_count?: number;
       degraded: boolean;
     };
+    speaker_ownership_v15?: {
+      policy_version: string;
+      region_count: number;
+      changed_word_count: number;
+      disputed_region_count: number;
+      possible_missing_speech_count: number;
+      batch_count: number;
+      natural_segmentation: {
+        segment_count?: number;
+        fallback_boundary_count?: number;
+      };
+      degraded: boolean;
+    } | null;
     speaker_mapping: Record<string, string>;
     consolidation_policy_version: string | null;
     adjudication_policy_version: string | null;
@@ -147,6 +230,7 @@ export type ApiProcessingDetail = {
       excluded_count: number;
       excluded_source_seconds: number;
     };
+    listening_audit?: ApiListeningAuditSummary;
   };
   speakers: Array<{ id: number; display_name: string }>;
   segments: ApiProcessingSegment[];
@@ -196,6 +280,16 @@ export type ApiEpisodeDetail = ApiEpisode & {
   quality_gates: Record<string, unknown>;
 };
 
+export type AgentProvider = NonNullable<SettingsUpdate["agent_provider"]>;
+
+export type AgentProviderStatus = {
+  configured: boolean;
+  ready: boolean;
+  identity: string;
+  cli_version: string;
+  auth_method: string;
+};
+
 export type Readiness = {
   ready: boolean;
   services: Record<string, boolean>;
@@ -207,6 +301,11 @@ export type Readiness = {
       optional?: boolean;
     }
   >;
+  agent?: {
+    provider: AgentProvider;
+    ready: boolean;
+    providers: Partial<Record<AgentProvider, AgentProviderStatus>>;
+  };
 };
 
 export type ApiChannel = {
@@ -310,6 +409,13 @@ export type ApiSettings = {
     processing_target_hours: number;
     manual_processing: boolean;
     auto_discovery: boolean;
+  };
+  speech: {
+    model: "indextts2" | "indextts25";
+  };
+  agent?: {
+    provider: AgentProvider;
+    readiness: Partial<Record<AgentProvider, "configured" | "missing">>;
   };
   retention: {
     intermediate_days: number;
@@ -750,7 +856,12 @@ export const api = {
   settings(signal?: AbortSignal) {
     return request<ApiSettings>("/api/v1/settings", undefined, signal);
   },
-  updateSettings(update: Partial<ApiSettings["automation"]>) {
+  updateSettings(
+    update: Partial<ApiSettings["automation"]> & {
+      speech_model?: ApiSettings["speech"]["model"];
+      agent_provider?: AgentProvider;
+    }
+  ) {
     return request<ApiSettings>("/api/v1/settings", {
       method: "PATCH",
       body: JSON.stringify(update)

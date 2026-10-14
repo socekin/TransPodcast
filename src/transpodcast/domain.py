@@ -216,6 +216,7 @@ class SourceCandidate:
     processing_run_id: int | None = None
     processing_attempt_id: int | None = None
     processing_correlation_id: str = ""
+    speech_pipeline_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -283,6 +284,7 @@ class SourceAnalysisResult:
     source_canonicalization_json: str = "{}"
     speaker_consolidation_json: str = "{}"
     boundary_adjudication_json: str = "{}"
+    render_plan_json: str = "{}"
     checksum: str = ""
     estimated_cost_usd: float = 0.0
     call_seconds: tuple[tuple[str, float], ...] = ()
@@ -346,8 +348,11 @@ class AudioQualityReport:
     clipping: bool = False
     rendered_segments: int = 1
     timeline_continuous: bool = True
-    boundary_artifacts: bool = False
-    source_language_leakage: bool = False
+    # ``None`` means not measured. Historical renders recorded literal
+    # ``False`` values; V19/V20 measure leakage with the Listening Audit and
+    # nothing measures boundary artifacts.
+    boundary_artifacts: bool | None = None
+    source_language_leakage: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -361,6 +366,10 @@ class SpeechResult:
     estimated_cost_usd: float = 0.0
     segment_timings: tuple[tuple[float, float], ...] = ()
     routing_json: str = "{}"
+    render_model: str = ""
+    render_model_revision: str = ""
+    render_code_commit: str = ""
+    render_settings_json: str = "{}"
 
 
 @dataclass(frozen=True)

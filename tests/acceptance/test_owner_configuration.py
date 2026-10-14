@@ -184,9 +184,14 @@ def test_owner_versions_interests_and_updates_safe_automation_settings(
         "manual_processing": False,
         "auto_discovery": False,
     }
+    assert defaults["speech"] == {"model": "indextts2"}
     assert defaults["retention"]["intermediate_days"] == 7
+    assert defaults["agent"] == {
+        "provider": "codex",
+        "readiness": {"codex": "configured", "claude": "configured"},
+    }
     assert defaults["secrets"] == {
-        "codex": "configured",
+        "agent": "configured",
         "modal": "configured",
         "cloudflare": "configured",
         "telegram": "configured",
@@ -211,6 +216,29 @@ def test_owner_versions_interests_and_updates_safe_automation_settings(
     assert changed.json()["automation"]["discovery_interval_minutes"] == 60
     assert changed.json()["automation"]["duration_guardrail_minutes"] == 240
     assert changed.json()["notifications"]["automatic_ignore"] is False
+
+    speech = client.patch(
+        "/api/v1/settings",
+        json={"speech_model": "indextts25"},
+    )
+    assert speech.status_code == 200
+    assert speech.json()["speech"] == {"model": "indextts25"}
+    assert client.patch(
+        "/api/v1/settings",
+        json={"speech_model": "unsupported"},
+    ).status_code == 422
+
+    agent = client.patch(
+        "/api/v1/settings",
+        json={"agent_provider": "claude"},
+    )
+    assert agent.status_code == 200
+    assert agent.json()["agent"]["provider"] == "claude"
+    assert agent.json()["speech"] == {"model": "indextts25"}
+    assert client.patch(
+        "/api/v1/settings",
+        json={"agent_provider": "unsupported"},
+    ).status_code == 422
 
     client.post(
         "/api/v1/source-channels",

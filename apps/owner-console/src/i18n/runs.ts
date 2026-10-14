@@ -6,7 +6,7 @@ export const runCopy = {
     empty: "还没有运行记录",
     emptyBody: "节目进入处理后会显示在这里。",
     cost: "Modal 预计成本",
-    tokens: "Codex tokens",
+    tokens: "Agent tokens",
     latestChange: "最近更新",
     queuedAt: "进入队列",
     firstClaimedAt: "首次开始处理",
@@ -17,6 +17,7 @@ export const runCopy = {
     refresh: "刷新运行记录",
     back: "返回运行记录",
     retry: "从最近有效进度继续",
+    acknowledgeAudit: "确认听感问题并继续",
     retrying: "正在重新排队",
     history: (count: number) => `历史尝试（${count}）`,
     technical: "技术信息",
@@ -66,9 +67,15 @@ export const runCopy = {
       translation_stalled:
         "翻译连续两轮没有新增完成段落，系统已暂停，避免继续消耗 tokens。",
       translation_provider:
-        "Codex 本轮没有正常完成，已保存的翻译进度仍可继续使用。",
+        "处理 Agent 本轮没有正常完成，已保存的翻译进度仍可继续使用。",
+      translation_provider_mismatch:
+        "翻译项目属于另一个处理 Agent；请重新处理整期节目以启动新的会话。",
+      agent_auth:
+        "处理 Agent 未在本机登录；请在运行 TransPodcast 的电脑上重新登录后重试。",
       translation_schema:
-        "翻译结果没有通过确定性的结构完整性检查。"
+        "翻译结果没有通过确定性的结构完整性检查。",
+      listening_audit:
+        "听感审计在自动重新配音一次后仍发现严重问题。请在“母带与音频质检”中查看问题单元；确认后节目进入待发布，问题会保留在发布检查里。"
     }
   },
   history: {
@@ -93,6 +100,22 @@ export const runCopy = {
     reviewerTurns: (count: number) => `校对会话 ${count} 轮`,
     unavailable: "这条旧记录没有独立进度数据"
   },
+  analysisFlow: {
+    title: "来源分析内部流程",
+    wordTimeline: "声学与逐词时间线",
+    wordTimelineHint: "说话人分轨 · ASR · 逐词对齐",
+    speakerOwnership: "说话人归属",
+    ownershipSummary: (
+      regions: number,
+      changedWords: number,
+      disputedRegions: number
+    ) =>
+      `${regions} 个风险区 · ${changedWords} 个词已调整 · ${disputedRegions} 个争议区`,
+    naturalSegmentation: "自然切分",
+    segmentationSummary: (segments: number, fallbackBoundaries: number) =>
+      `${segments} 个最终片段 · ${fallbackBoundaries} 个兜底切点`,
+    degraded: "部分风险区已降级保留"
+  },
   metrics: {
     archive_bytes: "原音归档",
     segments: "转录片段",
@@ -107,10 +130,14 @@ export const runCopy = {
     output_tokens: "输出 tokens",
     rendered_segments: "配音片段",
     output_bytes: "输出音频",
+    pronunciation_policy_version: "2.5 注音策略",
+    pronunciation_annotation_count: "英文注音片段",
+    pronunciation_fallback_count: "原文回退片段",
+    chinese_replacement_count: "中文名称替换",
     codec: "编码",
     sample_rate_hz: "采样率",
     channels: "声道",
-    bitrate_kbps: "码率",
+    bitrate_kbps: "平均码率",
     loudness_lufs: "综合响度",
     true_peak_dbtp: "真峰值",
     timeline_continuous: "时间线连续",

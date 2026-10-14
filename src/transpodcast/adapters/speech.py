@@ -25,11 +25,36 @@ from transpodcast.errors import (
     SpendGuardrailReached,
     TransientProviderError,
 )
+from transpodcast.pipeline_versions import (
+    CURRENT_SPEECH_PIPELINE_VERSION,
+    RHYTHM_PIPELINES,
+    analysis_version_for_pipeline,
+    speech_model_for_pipeline_version,
+)
+from transpodcast.unit_clip_store import unit_clip_store_root
 
-_READINESS_CACHE: dict[tuple[str, ...], tuple[float, bool]] = {}
+_READINESS_CACHE: dict[tuple[str, ...], tuple[float, dict[str, Any] | None]] = {}
 
 
-def _audio_quality_report(quality: dict[str, Any]) -> AudioQualityReport:
+def _optional_flag(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _audio_quality_report(
+    quality: dict[str, Any],
+    *,
+    base: AudioQualityReport | None = None,
+) -> AudioQualityReport:
+    """Read a pipeline quality object.
+
+    Only measured fields are trusted. ``timeline_continuous`` fails closed
+    when a render omits it; ``boundary_artifacts`` and
+    ``source_language_leakage`` stay ``None`` (not measured) when absent.
+    A remaster only re-measures the encoded file, so ``base`` carries the
+    timeline and Listening Audit measurements of the render it repairs.
+    """
+    timeline = quality.get("timeline_continuous")
+    leakage = _optional_flag(quality.get("source_language_leakage"))
     return AudioQualityReport(
         codec=str(quality.get("codec", "")),
         sample_rate_hz=int(quality.get("sample_rate_hz", 0)),
@@ -49,9 +74,19 @@ def _audio_quality_report(quality: dict[str, Any]) -> AudioQualityReport:
         ),
         clipping=bool(quality.get("clipping", True)),
         rendered_segments=int(quality.get("rendered_segments", 0)),
-        timeline_continuous=bool(quality.get("timeline_continuous", False)),
-        boundary_artifacts=bool(quality.get("boundary_artifacts", True)),
-        source_language_leakage=bool(quality.get("source_language_leakage", True)),
+        timeline_continuous=(
+            timeline
+            if isinstance(timeline, bool)
+            else base.timeline_continuous
+            if base is not None
+            else False
+        ),
+        boundary_artifacts=_optional_flag(quality.get("boundary_artifacts")),
+        source_language_leakage=(
+            leakage
+            if leakage is not None or base is None
+            else base.source_language_leakage
+        ),
     )
 
 
@@ -101,6 +136,73 @@ class ModalCommandAnalysisAdapter:
     def readiness(self) -> bool:
         return _pipeline_readiness(self.command)
 
+    def measure_ownership(
+        self,
+        analysis: SourceAnalysisResult,
+        archive: SourceArchive,
+        ranges: list[tuple[int, int]],
+    ) -> dict[str, Any]:
+        with TemporaryDirectory(prefix="transpodcast-ownership-evidence-") as temporary:
+            root = Path(temporary)
+            source = root / f"source.{archive.extension}"
+            source.write_bytes(archive.content)
+            request = root / "request.json"
+            request.write_text(
+                json.dumps(
+                    {
+                        "source": {
+                            "audio_path": str(source),
+                            "checksum": archive.checksum,
+                        },
+                        "ownership": {
+                            "ranges": ranges,
+                            "segments": [
+                                {
+                                    "segment_id": s.segment_id,
+                                    "speaker_label": s.speaker_label,
+                                    "text": s.text,
+                                    "start_seconds": s.start_seconds,
+                                    "end_seconds": s.end_seconds,
+                                    "words": [
+                                        {
+                                            "text": t,
+                                            "start_seconds": start,
+                                            "end_seconds": end,
+                                        }
+                                        for t, start, end in s.words
+                                    ],
+                                }
+                                for s in analysis.segments
+                            ],
+                            "speakers": [
+                                {"local_label": s.local_label, "embedding": s.embedding}
+                                for s in analysis.speakers
+                            ],
+                            "turns": [
+                                {
+                                    "speaker": s,
+                                    "start_seconds": start,
+                                    "end_seconds": end,
+                                }
+                                for s, start, end in analysis.raw_diarization_turns
+                            ],
+                            "consolidation": json.loads(
+                                analysis.speaker_consolidation_json
+                            ),
+                            "full_asr_text": analysis.full_asr_text,
+                            "boundary": json.loads(analysis.boundary_adjudication_json),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return _run_pipeline_command(
+                self.command,
+                operation="ownership-evidence",
+                request_path=request,
+                response_path=root / "response.json",
+            )
+
     def analyze(
         self,
         candidate: SourceCandidate,
@@ -127,6 +229,10 @@ class ModalCommandAnalysisAdapter:
                             "checksum": archive.checksum,
                         },
                         "analysis": {
+                            "pipeline_version": analysis_version_for_pipeline(
+                                candidate.speech_pipeline_version
+                                or CURRENT_SPEECH_PIPELINE_VERSION
+                            ),
                             "detect_speakers": True,
                             "detect_crosstalk": True,
                             "detect_source_events": True,
@@ -266,11 +372,23 @@ class ModalCommandAnalysisAdapter:
 
 
 class ModalCommandSpeechAdapter:
-    def __init__(self, command: str) -> None:
+    def __init__(
+        self,
+        command: str,
+        *,
+        artifact_root: Path | None = None,
+    ) -> None:
         self.command = shlex.split(command)
+        self.artifact_root = artifact_root
 
     def readiness(self) -> bool:
         return _pipeline_readiness(self.command)
+
+    def listening_audit_readiness(self) -> bool:
+        """Whether the deployed apps expose the Listening Audit methods."""
+        response = _pipeline_readiness_response(self.command)
+        audit = response.get("listening_audit") if response else None
+        return isinstance(audit, dict) and audit.get("available") is True
 
     def render(
         self,
@@ -330,7 +448,10 @@ class ModalCommandSpeechAdapter:
                 publication_audio=media_path.read_bytes(),
                 duration_seconds=int(response["duration_seconds"]),
                 pipeline_version=str(response["pipeline_version"]),
-                quality=_audio_quality_report(response.get("quality") or {}),
+                quality=_audio_quality_report(
+                    response.get("quality") or {},
+                    base=speech.quality,
+                ),
             )
 
     def _render(
@@ -343,6 +464,10 @@ class ModalCommandSpeechAdapter:
     ) -> SpeechResult:
         if not self.readiness():
             raise RuntimeError("Modal speech pipeline command is not configured")
+        speech_pipeline_version = (
+            candidate.speech_pipeline_version
+            or CURRENT_SPEECH_PIPELINE_VERSION
+        )
         with TemporaryDirectory(prefix="transpodcast-modal-") as temp:
             root = Path(temp)
             source_path: Path | None = None
@@ -378,7 +503,10 @@ class ModalCommandSpeechAdapter:
                             "segments": translation.segments,
                         },
                         "rendering": {
-                            "renderer": "IndexTTS2",
+                            "renderer": speech_model_for_pipeline_version(
+                                speech_pipeline_version
+                            ),
+                            "pipeline_version": speech_pipeline_version,
                             "emotion_alpha": 0.8,
                             "random_sampling": False,
                             "scope": (
@@ -397,6 +525,13 @@ class ModalCommandSpeechAdapter:
                                 json.loads(candidate.prior_render_json)
                                 if candidate.prior_render_json
                                 else None
+                            ),
+                            **self._unit_clip_store(
+                                candidate,
+                                speech_pipeline_version,
+                            ),
+                            "listening_audit": (
+                                speech_pipeline_version in RHYTHM_PIPELINES
                             ),
                         },
                         "publication_audio": {
@@ -445,7 +580,39 @@ class ModalCommandSpeechAdapter:
                     for item in response.get("segment_timings", [])
                 ),
                 routing_json=_routing_json(response),
+                render_model=str(response.get("render_model", "")),
+                render_model_revision=str(
+                    response.get("render_model_revision", "")
+                ),
+                render_code_commit=str(
+                    response.get("render_code_commit", "")
+                ),
+                render_settings_json=json.dumps(
+                    response.get("render_settings") or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             )
+
+    def _unit_clip_store(
+        self,
+        candidate: SourceCandidate,
+        speech_pipeline_version: str,
+    ) -> dict[str, str]:
+        if (
+            speech_pipeline_version not in RHYTHM_PIPELINES
+            or self.artifact_root is None
+            or candidate.processing_run_id is None
+        ):
+            return {}
+        return {
+            "unit_clip_store_root": str(
+                unit_clip_store_root(
+                    self.artifact_root,
+                    candidate.processing_run_id,
+                ).resolve()
+            )
+        }
 
 
 def _run_pipeline_command(
@@ -502,8 +669,14 @@ def _run_pipeline_command(
 
 
 def _pipeline_readiness(command: list[str]) -> bool:
+    response = _pipeline_readiness_response(command)
+    return response is not None and response.get("ready") is True
+
+
+def _pipeline_readiness_response(command: list[str]) -> dict[str, Any] | None:
+    """Run the readiness operation at most every five minutes per command."""
     if not command or shutil.which(command[0]) is None:
-        return False
+        return None
     key = tuple(command)
     cached = _READINESS_CACHE.get(key)
     now = time.monotonic()
@@ -514,6 +687,7 @@ def _pipeline_readiness(command: list[str]) -> bool:
         request_path = root / "request.json"
         response_path = root / "response.json"
         request_path.write_text("{}", encoding="utf-8")
+        response: dict[str, Any] | None
         try:
             response = _run_pipeline_command(
                 command,
@@ -521,8 +695,7 @@ def _pipeline_readiness(command: list[str]) -> bool:
                 request_path=request_path,
                 response_path=response_path,
             )
-            ready = response.get("ready") is True
         except (OSError, RuntimeError, subprocess.TimeoutExpired):
-            ready = False
-    _READINESS_CACHE[key] = (now, ready)
-    return ready
+            response = None
+    _READINESS_CACHE[key] = (now, response)
+    return response

@@ -11,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_FILES = (
     r"(^|/)(\.git|\.venv|\.cache|\.mypy_cache|\.ruff_cache|"
     r"node_modules|dist|coverage|htmlcov)(/|$)|"
-    r"^workers/publication/worker-configuration\.d\.ts$"
+    r"^workers/publication/worker-configuration\.d\.ts$|"
+    # Synthetic assembly traces record checksums of generated test audio and
+    # cannot carry inline allowlist comments.
+    r"^tests/fixtures/legacy-assembly-trace-[^/]+\.json$"
 )
 
 

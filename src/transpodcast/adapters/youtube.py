@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -30,12 +31,20 @@ class YtDlpSourceAdapter:
         self,
         executable: str = "yt-dlp",
         proxy_url: str = "",
+        browser_executable: Path | None = None,
     ) -> None:
         self.executable = executable
         self.proxy_url = proxy_url.strip()
+        self.browser_executable = browser_executable
 
     def readiness(self) -> bool:
-        return shutil.which(self.executable) is not None
+        browser = self.browser_executable
+        return (
+            shutil.which(self.executable) is not None
+            and browser is not None
+            and browser.is_file()
+            and os.access(browser, os.X_OK)
+        )
 
     def resolve_channel(self, url: str) -> ChannelResolution:
         metadata = self._json(
@@ -344,12 +353,23 @@ class YtDlpSourceAdapter:
         )
 
     def archive(self, candidate: SourceCandidate) -> SourceArchive:
+        if self.browser_executable is None:
+            raise RuntimeError(
+                "YouTube source archive browser is not configured"
+            )
         with TemporaryDirectory(prefix="transpodcast-youtube-") as temp:
             root = Path(temp)
             completed = subprocess.run(
                 self._command(
                     "--no-cookies",
                     "--no-playlist",
+                    "--extractor-args",
+                    "youtube:player_client=mweb",
+                    "--extractor-args",
+                    (
+                        "youtubepot-wpc:browser_path="
+                        f"{self.browser_executable}"
+                    ),
                     "--format",
                     "bestaudio[ext=m4a]/bestaudio",
                     "--paths",

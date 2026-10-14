@@ -7,8 +7,8 @@ There are two separate setup levels:
 
 - **Local evaluation:** run the UI and deterministic tests without live provider
   calls.
-- **Real operation:** process media for learning or research through Codex,
-  Modal, publication storage, and optional Telegram notifications.
+- **Real operation:** process media for learning or research through Codex or
+  Claude Code, Modal, publication storage, and optional Telegram notifications.
 
 ## 1. Install the local prerequisites
 
@@ -19,6 +19,8 @@ TransPodcast currently targets an always-on macOS host.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - Node.js 22 or newer and npm
 - [FFmpeg](https://ffmpeg.org/download.html)
+- Google Chrome or another Chromium-based browser, used locally to generate
+  YouTube proof-of-origin tokens for source downloads
 
 Install the Xcode Command Line Tools first if they are missing:
 
@@ -55,7 +57,12 @@ make check
 frontend tests, a production frontend build, and a local secret scan. It does
 not contact external providers.
 
-## 3. Install and authenticate Codex CLI
+## 3. Install and authenticate an Agent CLI
+
+Codex CLI is the default processing Agent. Claude Code is an optional
+alternative; install at least one and select it in **Settings**.
+
+### Codex CLI
 
 Install Codex CLI with the official macOS/Linux installer:
 
@@ -79,6 +86,25 @@ TransPodcast services. Codex authentication is stored for that local user; do
 not copy its authentication files into `.env`, this repository, or a deployment
 artifact. See the official [Codex CLI guide](https://developers.openai.com/codex/cli)
 for current installation and sign-in options.
+
+### Claude Code (optional)
+
+Install Claude Code with the official installer, sign in by running `claude`
+once, then verify the saved session:
+
+```shell
+curl -fsSL https://claude.ai/install.sh | bash
+claude --version
+claude
+claude auth status
+```
+
+TransPodcast runs Claude Code isolated from personal settings and does not pass
+`ANTHROPIC_API_KEY`, so sign in with a Claude subscription account. After
+TransPodcast Host starts, open **Settings** and select **Claude** as the
+processing Agent. See the official
+[Claude Code setup guide](https://code.claude.com/docs/en/setup) and
+[Configuration](configuration.md#agent-providers).
 
 ## 4. Start TransPodcast Host
 
@@ -110,9 +136,10 @@ prevents accidental partial or billable runs.
 
 For a real episode, configure:
 
-1. Codex CLI authentication for triage, translation, review, and metadata.
+1. The selected Agent CLI (Codex or Claude Code) for triage, translation,
+   review, Speaker ownership review, and metadata.
 2. Modal and the pinned speech applications for diarization, ASR, alignment,
-   speaker measurement, and TTS.
+   speaker measurement, TTS, and the Listening Audit.
 3. Publication storage: local mode for development, or private R2 for a remote
    feed.
 4. At least one YouTube source channel or direct source URL that may be used
@@ -150,7 +177,7 @@ In TransPodcast Host:
 1. Open **Sources** and add a channel or direct video URL.
 2. Review the discovered metadata and choose the episode.
 3. Start processing and monitor the durable stage attempts.
-4. Resolve any quality or attribution review items.
+4. Resolve any quality, attribution, or Listening Audit review items.
 5. Listen to the private preview.
 6. Publish only after the final owner decision is enabled.
 

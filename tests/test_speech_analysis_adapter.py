@@ -7,13 +7,26 @@ from types import SimpleNamespace
 
 import pytest
 
-from transpodcast.adapters.speech import ModalCommandAnalysisAdapter
-from transpodcast.domain import SourceArchive, SourceCandidate
+from transpodcast.adapters.speech import (
+    ModalCommandAnalysisAdapter,
+    ModalCommandSpeechAdapter,
+)
+from transpodcast.domain import SourceArchive, SourceCandidate, TranslationResult
 from transpodcast.errors import ProviderExecutionError
+from transpodcast.pipeline_versions import SPEECH_PIPELINE_V16
 
 
+@pytest.mark.parametrize(
+    "version,analysis_version",
+    [
+        ("transpodcast-modal-pipeline-v16", "transpodcast-modal-pipeline-v15"),
+        ("transpodcast-modal-pipeline-v18", "transpodcast-modal-pipeline-v17"),
+    ],
+)
 def test_analysis_adapter_preserves_canonicalization_evidence(
     monkeypatch,
+    version,
+    analysis_version,
 ) -> None:
     from transpodcast.adapters import speech
 
@@ -117,6 +130,7 @@ def test_analysis_adapter_preserves_canonicalization_evidence(
         checksum=hashlib.sha256(source_audio).hexdigest(),
     )
     candidate = SourceCandidate(
+        speech_pipeline_version=version,
         youtube_video_id="video-1",
         title="Fixture",
         description="",
@@ -139,6 +153,7 @@ def test_analysis_adapter_preserves_canonicalization_evidence(
     assert result.diarization_model_revision == "sortformer-revision"
     assert result.speakers[0].reference_audio == b"reference"
     assert result.segments[0].omitted_as_sponsor is False
+    assert request_payload["analysis"]["pipeline_version"] == analysis_version
     assert "detect_sponsors" not in request_payload["analysis"]
     assert request_payload["routing_context"] == {
         "processing_run_id": 15,
@@ -154,6 +169,102 @@ def test_analysis_adapter_preserves_canonicalization_evidence(
         "selected_reference_windows": {"speaker-a": "speaker-raw-w0001"},
         "speaker_mapping": {"speaker-raw": "speaker-a"},
     }
+
+
+def test_speech_adapter_routes_v16_to_indextts25_and_records_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from transpodcast.adapters import speech
+
+    monkeypatch.setattr(speech, "_pipeline_readiness", lambda command: True)
+    captured: dict[str, object] = {}
+
+    def fake_pipeline(command, *, operation, request_path, response_path):
+        del command, operation, response_path
+        captured.update(json.loads(request_path.read_text(encoding="utf-8")))
+        media_path = tmp_path / "publication.m4a"
+        media_path.write_bytes(b"audio")
+        return {
+            "publication_audio_path": str(media_path),
+            "duration_seconds": 1,
+            "pipeline_version": SPEECH_PIPELINE_V16,
+            "render_model": "IndexTeam/IndexTTS-2.5",
+            "render_model_revision": "model-revision",
+            "render_code_commit": "code-commit",
+            "render_settings": {
+                "renderer": "indextts25",
+                "lang": "zh",
+                "speech_text_hashes": [
+                    {
+                        "render_unit_id": "seg-0001",
+                        "sha256": "adapted-text-sha",
+                    }
+                ],
+            },
+            "quality": {
+                "codec": "AAC-LC",
+                "sample_rate_hz": 48000,
+                "channels": 2,
+                "bitrate_kbps": 128,
+                "loudness_lufs": -16,
+                "true_peak_dbtp": -1,
+                "clipping": False,
+                "rendered_segments": 1,
+                "timeline_continuous": True,
+                "boundary_artifacts": False,
+                "source_language_leakage": False,
+            },
+            "segment_timings": [{"start_seconds": 0.0, "end_seconds": 1.0}],
+        }
+
+    monkeypatch.setattr(speech, "_run_pipeline_command", fake_pipeline)
+    candidate = SourceCandidate(
+        youtube_video_id="video-25",
+        title="Fixture",
+        description="",
+        duration_seconds=1,
+        language="en",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
+        source_url="https://example.test/video-25",
+        captions=None,
+        analysis_json=json.dumps({"segments": []}),
+        source_archive=SourceArchive(
+            content=b"source",
+            extension="m4a",
+            media_type="audio/mp4",
+            checksum=hashlib.sha256(b"source").hexdigest(),
+        ),
+        speech_pipeline_version=SPEECH_PIPELINE_V16,
+    )
+    translation = TranslationResult(
+        title="Title",
+        overview="Overview",
+        target_locale="zh-CN",
+        segments=("Tesla 和 SpaceX。",),
+        provider="fixture",
+        model="fixture",
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+    result = ModalCommandSpeechAdapter("python").render(
+        candidate,
+        translation,
+    )
+
+    assert captured["rendering"]["renderer"] == "indextts25"
+    assert captured["rendering"]["pipeline_version"] == SPEECH_PIPELINE_V16
+    assert result.render_model == "IndexTeam/IndexTTS-2.5"
+    assert result.render_model_revision == "model-revision"
+    assert result.render_code_commit == "code-commit"
+    assert json.loads(result.render_settings_json)["lang"] == "zh"
+    assert json.loads(result.render_settings_json)["speech_text_hashes"] == [
+        {
+            "render_unit_id": "seg-0001",
+            "sha256": "adapted-text-sha",
+        }
+    ]
 
 
 def test_failed_modal_command_preserves_safe_routing_evidence(

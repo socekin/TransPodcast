@@ -5,7 +5,7 @@ not licensed by the TransPodcast application license. Operators must review the
 exact terms attached to every model revision they deploy.
 
 The current pipeline code references these model families. This inventory was
-last verified on 2026-08-10:
+last verified on 2026-10-14:
 
 | Model family | Pipeline role | Upstream terms to verify |
 | --- | --- | --- |
@@ -13,14 +13,15 @@ last verified on 2026-08-10:
 | Qwen3-ASR | Speech recognition | [Apache License 2.0](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) |
 | Qwen3 ForcedAligner | Word alignment | [Apache License 2.0](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B) |
 | NVIDIA TitaNet | Speaker embeddings | [CC BY 4.0](https://huggingface.co/nvidia/speakerverification_en_titanet_large) |
-| IndexTTS2 | Mandarin speech synthesis | [Bilibili Model Use License Agreement](https://github.com/index-tts/index-tts/blob/main/LICENSE) |
+| IndexTTS2 | Mandarin speech synthesis (default renderer) | [Bilibili Model Use License Agreement](https://github.com/index-tts/index-tts/blob/main/LICENSE) |
+| IndexTTS 2.5 | Optional Mandarin speech renderer | [bilibili Model Use License Agreement](https://huggingface.co/IndexTeam/IndexTTS-2.5) |
 
 This table is an inventory, not legal advice and not a substitute for the
 upstream license files. In particular, custom model-use terms may impose use,
 distribution, attribution, organization-size, or commercial restrictions that
 differ from an OSI-approved software license.
 
-The IndexTTS2 agreement deserves specific review. At the verification date it
+The IndexTTS agreements deserve specific review. At the verification date it
 requires a separate upstream license for certain organizations above its
 monthly-active-user or annual-revenue thresholds, imposes downstream and notice
 obligations, and restricts several uses. A TransPodcast commercial license does

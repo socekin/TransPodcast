@@ -21,8 +21,7 @@ from transpodcast.models import (
     ProcessingRunRecord,
     ProcessingStageRecord,
 )
-from transpodcast.pipeline_versions import CURRENT_SPEECH_PIPELINE_VERSION
-from transpodcast.speaker_tail_boundary_repair import SpeakerTailRepairVerdict
+from transpodcast.pipeline_versions import SPEECH_PIPELINE_V15
 from transpodcast.testing import (
     AcceptanceHarness,
     FakeAnalysisAdapter,
@@ -100,7 +99,7 @@ class MixedSegmentAnalysisAdapter(FakeAnalysisAdapter):
         return replace(
             base,
             segments=segments,
-            pipeline_version=CURRENT_SPEECH_PIPELINE_VERSION,
+            pipeline_version=SPEECH_PIPELINE_V15,
             diarization_model_revision="fixture-sortformer-v21-revision",
             raw_diarization_turns=(
                 ("speaker-02", 10.0, 11.0),
@@ -111,38 +110,7 @@ class MixedSegmentAnalysisAdapter(FakeAnalysisAdapter):
         )
 
 
-class RaisingTailRepairTranslation(ThreeSegmentTranslationAdapter):
-    def plan_speaker_boundaries(self, candidates):
-        self.planned_boundary_candidates.extend(candidates)
-        raise RuntimeError("fixture tail repair application defect")
-
-
-def _advance_mixed_segment(
-    tmp_path,
-    *,
-    tail_repair_error: str | None = None,
-    internal_failure: bool = False,
-):
-    harness = AcceptanceHarness.ready(tmp_path)
-    translation = (
-        RaisingTailRepairTranslation()
-        if internal_failure
-        else ThreeSegmentTranslationAdapter()
-    )
-    translation.tail_repair_error = tail_repair_error
-    translation.tail_repair_verdicts["tail-repair::seg-0002::seg-0003::10.000"] = (
-        SpeakerTailRepairVerdict(
-            action="shift_tail",
-            shift_before_word_index=2,
-            rationale="A new answer begins with Yes.",
-        )
-    )
-    dependencies = replace(
-        harness.dependencies,
-        analysis=MixedSegmentAnalysisAdapter(),
-        translation=translation,
-        speech=MatchingSpeechAdapter(),
-    )
+def _client(dependencies) -> TestClient:
     client = TestClient(create_app(dependencies))
     client.post(
         "/api/v1/source-channels",
@@ -152,135 +120,68 @@ def _advance_mixed_segment(
         },
     )
     client.post("/api/v1/discovery-runs")
+    return client
+
+
+def test_v15_records_ownership_and_segmentation_activity(tmp_path) -> None:
+    harness = AcceptanceHarness.ready(tmp_path)
+    dependencies = replace(
+        harness.dependencies,
+        analysis=MixedSegmentAnalysisAdapter(),
+        translation=ThreeSegmentTranslationAdapter(),
+        speech=MatchingSpeechAdapter(),
+    )
+    client = _client(dependencies)
     advanced = client.post("/api/v1/processing-runs:advance").json()
-    return dependencies, translation, advanced
 
-
-def test_current_pipeline_repairs_the_pair_before_translation_without_a_new_stage(
-    tmp_path,
-) -> None:
-    dependencies, translation, advanced = _advance_mixed_segment(tmp_path)
-
-    assert [
-        candidate.current_segment_id
-        for candidate in translation.planned_boundary_candidates
-    ] == ["seg-0002"]
     with dependencies.database.session() as session:
-        run = session.get(ProcessingRunRecord, advanced["processing_run_id"])
-        assert run is not None
-        analysis = json.loads(str(run.analysis_json))
-        translated = json.loads(str(run.translation_json))
-        stages = session.scalars(
-            select(ProcessingStageRecord).where(
-                ProcessingStageRecord.processing_run_id == run.id
-            )
-        ).all()
-        boundary_activity = session.scalars(
+        activity = session.scalars(
             select(ProcessingRunActivityRecord).where(
-                ProcessingRunActivityRecord.processing_run_id == run.id,
+                ProcessingRunActivityRecord.processing_run_id
+                == advanced["processing_run_id"],
                 ProcessingRunActivityRecord.kind
-                == "speaker_boundary_adjudication_completed",
+                == "speaker_ownership_adjudication_completed",
             )
         ).one()
-    assert [item["segment_id"] for item in analysis["segments"]] == [
-        "seg-0001",
-        "seg-0002",
-        "seg-0003",
-    ]
-    assert analysis["segments"][1]["text"] == "Ah kidding"
-    assert analysis["segments"][2]["text"] == "Yes and I did not know"
-    assert len(translated["segments"]) == 3
-    assert "unified_boundary_adjudication" in (analysis["boundary_adjudication"])
-    assert [stage.stage for stage in stages].count("source_analysis") == 1
-    source_usage = json.loads(
-        next(stage for stage in stages if stage.stage == "source_analysis").usage_json
+        stages = session.scalars(
+            select(ProcessingStageRecord).where(
+                ProcessingStageRecord.processing_run_id
+                == advanced["processing_run_id"]
+            )
+        ).all()
+
+    metadata = json.loads(activity.metadata_json)
+    assert metadata["region_count"] >= 1
+    assert metadata["natural_segment_count"] >= 1
+    assert metadata["fallback_boundary_count"] == 0
+    detail = client.get(
+        f"/api/v1/episodes/{advanced['episode_id']}/processing-detail"
+    ).json()
+    ownership = detail["summary"]["speaker_ownership_v15"]
+    assert ownership["region_count"] == metadata["region_count"]
+    assert ownership["natural_segmentation"]["segment_count"] == (
+        metadata["natural_segment_count"]
     )
+    assert [stage.stage for stage in stages].count("source_analysis") == 1
     source_stage = next(stage for stage in stages if stage.stage == "source_analysis")
+    source_usage = json.loads(source_stage.usage_json)
     assert "@fixture-sortformer-v21-revision" in source_stage.model
     assert source_usage["diarization_model_revision"] == (
         "fixture-sortformer-v21-revision"
     )
-    assert source_usage["discourse_input_tokens"] == 70
-    assert source_usage["discourse_output_tokens"] == 25
-    assert json.loads(boundary_activity.metadata_json) == {
-        "candidate_count": 1,
-        "completed": True,
-        "conflict_component_count": 0,
-        "locally_preserved_component_count": 0,
-        "planner_proposed_count": 1,
-        "provider_degraded_component_count": 0,
-        "reassign_whole_count": 0,
-        "reviewer_approved_count": 1,
-        "split_to_next_count": 1,
-        "error": None,
-    }
 
 
-def test_current_tail_repair_provider_failure_keeps_the_v10_shape(
+def _advance(
     tmp_path,
-) -> None:
-    dependencies, _, advanced = _advance_mixed_segment(
-        tmp_path,
-        tail_repair_error="fixture provider unavailable",
-    )
-
-    assert advanced["processing_state"] == "completed"
-    with dependencies.database.session() as session:
-        run = session.get(ProcessingRunRecord, advanced["processing_run_id"])
-        assert run is not None
-        analysis = json.loads(str(run.analysis_json))
-        degraded = session.scalars(
-            select(ProcessingRunActivityRecord).where(
-                ProcessingRunActivityRecord.processing_run_id == run.id,
-                ProcessingRunActivityRecord.kind
-                == "speaker_boundary_adjudication_degraded",
-            )
-        ).one()
-    assert [item["segment_id"] for item in analysis["segments"]] == [
-        "seg-0001",
-        "seg-0002",
-        "seg-0003",
-    ]
-    assert "preserved its affected boundaries" in degraded.summary
-
-
-def test_current_tail_repair_failure_keeps_processing_off_review_queue(
-    tmp_path,
-) -> None:
-    dependencies, _, advanced = _advance_mixed_segment(
-        tmp_path,
-        internal_failure=True,
-    )
-
-    assert advanced["processing_state"] == "completed"
-    with dependencies.database.session() as session:
-        run = session.get(ProcessingRunRecord, advanced["processing_run_id"])
-        assert run is not None
-        analysis = json.loads(str(run.analysis_json))
-        degraded = session.scalars(
-            select(ProcessingRunActivityRecord).where(
-                ProcessingRunActivityRecord.processing_run_id == run.id,
-                ProcessingRunActivityRecord.kind
-                == "speaker_boundary_adjudication_degraded",
-            )
-        ).one()
-    assert run.error_kind is None
-    assert [item["segment_id"] for item in analysis["segments"]] == [
-        "seg-0001",
-        "seg-0002",
-        "seg-0003",
-    ]
-    assert "fixture tail repair application defect" in str(
-        json.loads(degraded.metadata_json)["error"]
-    )
-
-
-def _advance(tmp_path, *, discourse_error: str | None = None):
+    *,
+    analysis: FakeAnalysisAdapter | None = None,
+    translation: FakeTranslationAdapter | None = None,
+    discourse_error: str | None = None,
+):
     harness = AcceptanceHarness.ready(tmp_path)
-    analysis = FakeAnalysisAdapter()
+    analysis = analysis or FakeAnalysisAdapter()
     analysis.pending_adjudication = True
-    translation = ThreeSegmentTranslationAdapter()
-    translation.discourse_owner = "speaker-01"
+    translation = translation or ThreeSegmentTranslationAdapter()
     translation.discourse_error = discourse_error
     dependencies = replace(
         harness.dependencies,
@@ -288,17 +189,34 @@ def _advance(tmp_path, *, discourse_error: str | None = None):
         translation=translation,
         speech=MatchingSpeechAdapter(),
     )
-    client = TestClient(create_app(dependencies))
-    client.post(
-        "/api/v1/source-channels",
-        json={
-            "url": "https://www.youtube.com/@usefulshow",
-            "mode": "agent_filtering",
-        },
-    )
-    client.post("/api/v1/discovery-runs")
+    client = _client(dependencies)
     advanced = client.post("/api/v1/processing-runs:advance").json()
     return dependencies, translation, advanced
+
+
+def _stored_analysis(dependencies, advanced) -> dict:
+    with dependencies.database.session() as session:
+        run = session.get(
+            ProcessingRunRecord,
+            int(advanced["processing_run_id"]),
+        )
+        assert run is not None
+        assert run.error_kind is None
+        return dict(json.loads(str(run.analysis_json)))
+
+
+def _activity(dependencies, advanced, kind: str) -> list[dict]:
+    with dependencies.database.session() as session:
+        return [
+            json.loads(item.metadata_json)
+            for item in session.scalars(
+                select(ProcessingRunActivityRecord).where(
+                    ProcessingRunActivityRecord.processing_run_id
+                    == int(advanced["processing_run_id"]),
+                    ProcessingRunActivityRecord.kind == kind,
+                )
+            ).all()
+        ]
 
 
 def test_worker_completes_pending_adjudication_through_the_adapter(
@@ -306,17 +224,9 @@ def test_worker_completes_pending_adjudication_through_the_adapter(
 ) -> None:
     dependencies, translation, advanced = _advance(tmp_path)
 
-    assert [
-        candidate.ownership_dispute_ids
-        for candidate in translation.planned_boundary_candidates
-    ] == [("dispute-10.1-speaker-02",)]
-    with dependencies.database.session() as session:
-        run = session.get(
-            ProcessingRunRecord,
-            int(advanced["processing_run_id"]),
-        )
-        assert run is not None
-        analysis = json.loads(str(run.analysis_json))
+    assert translation.planned_speaker_ownership_regions
+    assert translation.reviewed_speaker_ownership_regions
+    analysis = _stored_analysis(dependencies, advanced)
     expected_checksum = hashlib.sha256(
         json.dumps(
             {key: value for key, value in analysis.items() if key != "checksum"},
@@ -328,35 +238,18 @@ def test_worker_completes_pending_adjudication_through_the_adapter(
     assert analysis["checksum"] == expected_checksum
     adjudication = analysis["boundary_adjudication"]
     assert "pending" not in adjudication
-    assert adjudication["changed_count"] == 1
-    assert adjudication["marked_count"] == 1
-    record = adjudication["decision_records"][0]
-    assert record["verdict"] == "whole-reassignment-applied"
+    assert "speaker_ownership_v15_checkpoint" not in adjudication
+    assert adjudication["speaker_ownership_v15"]["region_count"] >= 1
     assert adjudication["decision_ledger_reference"]
-    assert adjudication["discourse_usage"] == {
-        "input_tokens": 70,
-        "output_tokens": 25,
-    }
-    assert adjudication["discourse_execution"] == {
-        "provider": "fake-codex",
-        "model": "deterministic-boundary-planner",
-        "cli_version": "fixture-cli 1.0",
-    }
-    repaired = next(
-        segment for segment in analysis["segments"] if "and" in segment["text"].split()
-    )
-    assert repaired["speaker_label"] == "speaker-01"
-    assert repaired["review_state"] == "disputed"
     attribution = [
         item
         for item in analysis["speaker_consolidation"]["decision_records"]
         if item["kind"] == "segment-attribution"
     ]
     assert len(attribution) == len(analysis["segments"])
-    assert attribution[0]["subject"]["speaker"] == "speaker-01"
 
 
-def test_discourse_usage_is_accounted_on_the_stage(tmp_path) -> None:
+def test_ownership_usage_is_accounted_on_the_stage(tmp_path) -> None:
     dependencies, _, advanced = _advance(tmp_path)
 
     with dependencies.database.session() as session:
@@ -371,7 +264,7 @@ def test_discourse_usage_is_accounted_on_the_stage(tmp_path) -> None:
     assert usage["discourse_input_tokens"] == 70
     assert usage["discourse_output_tokens"] == 25
     assert usage["discourse_provider"] == "fake-codex"
-    assert usage["discourse_model"] == "deterministic-boundary-planner"
+    assert usage["discourse_model"] == "deterministic-ownership-planner"
     assert usage["discourse_cli_version"] == "fixture-cli 1.0"
 
 
@@ -393,144 +286,79 @@ class OneShotCompletionFailureAdapter(ThreeSegmentTranslationAdapter):
         super().__init__()
         self.adjudication_attempts = 0
 
-    def plan_speaker_boundaries(self, candidates):
+    def plan_speaker_ownership(self, regions):
         self.adjudication_attempts += 1
         if self.adjudication_attempts == 1:
             raise RuntimeError("fixture local completion defect")
-        return super().plan_speaker_boundaries(candidates)
+        return super().plan_speaker_ownership(regions)
 
 
-def test_malformed_boundary_checkpoint_degrades_without_repeating_analysis(
+def test_malformed_ownership_checkpoint_degrades_without_repeating_analysis(
     tmp_path,
 ) -> None:
-    harness = AcceptanceHarness.ready(tmp_path)
     analysis = CorruptPendingAnalysisAdapter()
-    analysis.pending_adjudication = True
-    dependencies = replace(
-        harness.dependencies,
-        analysis=analysis,
-        translation=ThreeSegmentTranslationAdapter(),
-        speech=MatchingSpeechAdapter(),
-    )
-    client = TestClient(create_app(dependencies))
-    client.post(
-        "/api/v1/source-channels",
-        json={
-            "url": "https://www.youtube.com/@usefulshow",
-            "mode": "agent_filtering",
-        },
-    )
-    client.post("/api/v1/discovery-runs")
-    advanced = client.post("/api/v1/processing-runs:advance").json()
+    dependencies, _, advanced = _advance(tmp_path, analysis=analysis)
 
     assert advanced["processing_state"] == "completed"
     assert analysis.invocation_count == 1
-    with dependencies.database.session() as session:
-        run = session.get(
-            ProcessingRunRecord,
-            int(advanced["processing_run_id"]),
-        )
-        assert run is not None
-        assert run.analysis_json is not None
-        assert run.error_kind is None
-        completed_analysis = json.loads(run.analysis_json)
-        degraded = session.scalars(
-            select(ProcessingRunActivityRecord).where(
-                ProcessingRunActivityRecord.processing_run_id == run.id,
-                ProcessingRunActivityRecord.kind
-                == "speaker_boundary_adjudication_degraded",
-            )
-        ).one()
-    assert [item["segment_id"] for item in completed_analysis["segments"]] == [
-        "seg-0001",
-        "seg-0002",
-        "seg-0003",
-        "seg-0004",
-    ]
-    assert "words" in str(json.loads(degraded.metadata_json)["error"])
+    _stored_analysis(dependencies, advanced)
+    degraded = _activity(
+        dependencies,
+        advanced,
+        "speaker_ownership_adjudication_degraded",
+    )
+    assert len(degraded) == 1
+    assert "words" in str(degraded[0]["error"])
 
 
-def test_boundary_failure_preserves_voice_references_without_repeating_analysis(
+def test_ownership_failure_preserves_voice_references_without_repeating_analysis(
     tmp_path,
 ) -> None:
-    harness = AcceptanceHarness.ready(tmp_path)
     analysis = FakeAnalysisAdapter()
-    analysis.pending_adjudication = True
     translation = OneShotCompletionFailureAdapter()
-    dependencies = replace(
-        harness.dependencies,
+    dependencies, _, completed = _advance(
+        tmp_path,
         analysis=analysis,
         translation=translation,
-        speech=MatchingSpeechAdapter(),
     )
-    client = TestClient(create_app(dependencies))
-    client.post(
-        "/api/v1/source-channels",
-        json={
-            "url": "https://www.youtube.com/@usefulshow",
-            "mode": "agent_filtering",
-        },
-    )
-    client.post("/api/v1/discovery-runs")
-    completed = client.post("/api/v1/processing-runs:advance").json()
 
     assert completed["processing_state"] == "completed"
     assert analysis.invocation_count == 1
-    with dependencies.database.session() as session:
-        run = session.get(
-            ProcessingRunRecord,
-            int(completed["processing_run_id"]),
-        )
-        assert run is not None
-        final = json.loads(str(run.analysis_json))
-        degraded = session.scalars(
-            select(ProcessingRunActivityRecord).where(
-                ProcessingRunActivityRecord.processing_run_id == run.id,
-                ProcessingRunActivityRecord.kind
-                == "speaker_boundary_adjudication_degraded",
-            )
-        ).one()
     assert translation.adjudication_attempts == 1
-    assert json.loads(degraded.metadata_json)["error"]
+    final = _stored_analysis(dependencies, completed)
+    degraded = _activity(
+        dependencies,
+        completed,
+        "speaker_ownership_adjudication_degraded",
+    )
+    assert len(degraded) == 1
+    assert "fixture local completion defect" in str(degraded[0]["error"])
     references = [item["reference_artifact_key"] for item in final["speakers"]]
     assert len(references) == 2
     assert all(Path(value).read_bytes().startswith(b"RIFF") for value in references)
 
 
-def test_discourse_failure_degrades_and_is_logged(tmp_path) -> None:
+def test_ownership_provider_failure_degrades_and_is_logged(tmp_path) -> None:
     dependencies, _, advanced = _advance(
         tmp_path,
         discourse_error="RuntimeError: provider unavailable",
     )
 
-    with dependencies.database.session() as session:
-        run = session.get(
-            ProcessingRunRecord,
-            int(advanced["processing_run_id"]),
-        )
-        assert run is not None
-        analysis = json.loads(str(run.analysis_json))
-        activity = session.scalars(
-            select(ProcessingRunActivityRecord).where(
-                ProcessingRunActivityRecord.processing_run_id == run.id,
-                ProcessingRunActivityRecord.kind
-                == "speaker_boundary_adjudication_degraded",
-            )
-        ).all()
     assert advanced["episode_id"]
-    adjudication = analysis["boundary_adjudication"]
-    assert adjudication["changed_count"] == 0
-    assert adjudication["marked_count"] == 0
-    assert adjudication["decision_records"][0]["verdict"] == "provider-degraded"
-    assert (
-        "provider unavailable"
-        in (adjudication["unified_boundary_adjudication"]["error"])
-    )
+    analysis = _stored_analysis(dependencies, advanced)
+    ownership = analysis["boundary_adjudication"]["speaker_ownership_v15"]
+    assert ownership["changed_word_count"] == 0
+    assert "provider unavailable" in " ".join(ownership["degraded_errors"])
     stolen = next(
-        segment for segment in analysis["segments"] if segment["text"] == "and"
+        segment
+        for segment in analysis["segments"]
+        if "and" in segment["text"].split()
     )
     assert stolen["speaker_label"] == "speaker-02"
-    assert stolen["review_state"] == "accepted"
-    assert len(activity) == 1
-    metadata = json.loads(activity[0].metadata_json)
-    assert metadata["candidate_count"] == 1
+    degraded = _activity(
+        dependencies,
+        advanced,
+        "speaker_ownership_adjudication_degraded",
+    )
+    assert len(degraded) == 1
+    assert "provider unavailable" in str(degraded[0]["error"])

@@ -4,6 +4,7 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -12,11 +13,18 @@ from transpodcast.domain import (
     SourceAnalysisResult,
     TranslationResult,
 )
+from transpodcast.pipeline_versions import WORD_OWNERSHIP_PIPELINES
+from transpodcast.speaker_boundaries import recover_sentence_punctuation
 
 CONTENT_EDIT_POLICY_VERSION = "semantic-content-edit-v1"
 _ALLOWED_CATEGORIES = {"opening_highlight", "paid_ad"}
 _MINIMUM_CONFIDENCE = 0.90
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?")
+MAXIMUM_RENDER_UNIT_CHARACTERS = 240
+RENDER_PLAN_SCHEMA_VERSION = "render-plan-v1"
+_TARGET_SENTENCE_BOUNDARY = re.compile(
+    r"[\u3002\uFF01\uFF1F!?\uFF1B;]+[\u201D\u2019\"']*\s*"
+)
 
 
 @dataclass(frozen=True)
@@ -37,12 +45,104 @@ class ResolvedContentExclusion:
 
 
 @dataclass(frozen=True)
+class RenderPlanUnit:
+    unit_id: str
+    parent_segment_id: str
+    source_segment_id: str
+    source_start_seconds: float
+    source_end_seconds: float
+    pause_before_seconds: float
+    pause_after_seconds: float
+    target_text: str
+    internal_split: bool = False
+    approved_boundary_kind: str | None = None
+
+    @classmethod
+    def from_payload(cls, value: Mapping[str, object]) -> RenderPlanUnit:
+        try:
+            unit_id = value["unit_id"]
+            parent_segment_id = value["parent_segment_id"]
+            source_segment_id = value["source_segment_id"]
+            source_start_seconds = float(str(value["source_start_seconds"]))
+            source_end_seconds = float(str(value["source_end_seconds"]))
+            pause_before_seconds = float(str(value["pause_before_seconds"]))
+            pause_after_seconds = float(str(value["pause_after_seconds"]))
+            target_text = value["target_text"]
+            internal_split = value["internal_split"]
+            approved_boundary_kind = value["approved_boundary_kind"]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Render Plan unit is malformed") from error
+        if (
+            not isinstance(unit_id, str)
+            or not unit_id.strip()
+            or not isinstance(parent_segment_id, str)
+            or not parent_segment_id.strip()
+            or not isinstance(source_segment_id, str)
+            or not source_segment_id.strip()
+        ):
+            raise ValueError("Render Plan unit identity is invalid")
+        numeric_values = (
+            source_start_seconds,
+            source_end_seconds,
+            pause_before_seconds,
+            pause_after_seconds,
+        )
+        if not all(math.isfinite(number) for number in numeric_values):
+            raise ValueError("Render Plan unit timing must be finite")
+        if source_start_seconds >= source_end_seconds:
+            raise ValueError("Render Plan unit source span is invalid")
+        if pause_before_seconds < 0 or pause_after_seconds < 0:
+            raise ValueError("Render Plan pause metadata is invalid")
+        if not isinstance(target_text, str) or not target_text.strip():
+            raise ValueError("Render Plan unit target is invalid")
+        if not isinstance(internal_split, bool):
+            raise ValueError("Render Plan internal split flag is invalid")
+        if approved_boundary_kind not in {None, "sentence", "pause"}:
+            raise ValueError("Render Plan boundary kind is invalid")
+        return cls(
+            unit_id=unit_id,
+            parent_segment_id=parent_segment_id,
+            source_segment_id=source_segment_id,
+            source_start_seconds=source_start_seconds,
+            source_end_seconds=source_end_seconds,
+            pause_before_seconds=pause_before_seconds,
+            pause_after_seconds=pause_after_seconds,
+            target_text=target_text,
+            internal_split=internal_split,
+            approved_boundary_kind=approved_boundary_kind,
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "unit_id": self.unit_id,
+            "parent_segment_id": self.parent_segment_id,
+            "source_segment_id": self.source_segment_id,
+            "source_start_seconds": self.source_start_seconds,
+            "source_end_seconds": self.source_end_seconds,
+            "pause_before_seconds": self.pause_before_seconds,
+            "pause_after_seconds": self.pause_after_seconds,
+            "target_text": self.target_text,
+            "internal_split": self.internal_split,
+            "approved_boundary_kind": self.approved_boundary_kind,
+        }
+
+
+@dataclass(frozen=True)
+class _InternalRenderBoundary:
+    word_offset: int
+    kind: str
+    boundary_seconds: float
+    pause_seconds: float
+
+
+@dataclass(frozen=True)
 class RenderPlan:
     analysis: SourceAnalysisResult
     translation: TranslationResult
     exclusions: tuple[ResolvedContentExclusion, ...]
     status: str
     diagnostics: tuple[str, ...] = ()
+    units: tuple[RenderPlanUnit, ...] = ()
 
     @property
     def excluded_source_seconds(self) -> float:
@@ -197,12 +297,20 @@ def build_render_plan(
             "degraded",
             "content_edit_render_target_is_empty",
         )
+    units = _render_plan_units(
+        render_analysis.segments,
+        tuple(render_targets),
+        allow_internal_splits=(
+            analysis.pipeline_version in WORD_OWNERSHIP_PIPELINES
+        ),
+    )
     return RenderPlan(
-        analysis=render_analysis,
+        analysis=_analysis_with_render_units(render_analysis, units, normalized),
         translation=replace(translation, segments=render_targets),
         exclusions=normalized,
         status="degraded" if diagnostics else "accepted",
         diagnostics=tuple(diagnostics),
+        units=units,
     )
 
 
@@ -293,13 +401,274 @@ def _retained_plan(
     status: str,
     diagnostic: str | None = None,
 ) -> RenderPlan:
+    units = _render_plan_units(
+        analysis.segments,
+        translation.segments,
+        allow_internal_splits=(
+            analysis.pipeline_version in WORD_OWNERSHIP_PIPELINES
+        ),
+    )
     return RenderPlan(
-        analysis=analysis,
+        analysis=_analysis_with_render_units(analysis, units),
         translation=translation,
         exclusions=(),
         status=status,
         diagnostics=(diagnostic,) if diagnostic else (),
+        units=units,
     )
+
+
+def _analysis_with_render_units(
+    analysis: SourceAnalysisResult,
+    units: tuple[RenderPlanUnit, ...],
+    exclusions: tuple[ResolvedContentExclusion, ...] = (),
+) -> SourceAnalysisResult:
+    # The applied removal intervals let assembly place Content Edit cut
+    # transitions; renderers ignore them.
+    return replace(
+        analysis,
+        render_plan_json=json.dumps(
+            {
+                "schema_version": RENDER_PLAN_SCHEMA_VERSION,
+                "units": [unit.to_payload() for unit in units],
+                "exclusions": [
+                    {
+                        "start_seconds": item.start_seconds,
+                        "end_seconds": item.end_seconds,
+                    }
+                    for item in exclusions
+                ],
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+def _render_plan_units(
+    segments: tuple[CanonicalSegment, ...],
+    targets: tuple[str, ...],
+    *,
+    allow_internal_splits: bool,
+) -> tuple[RenderPlanUnit, ...]:
+    if len(segments) != len(targets):
+        return ()
+    units: list[RenderPlanUnit] = []
+    for index, (segment, target) in enumerate(
+        zip(segments, targets, strict=True)
+    ):
+        pause_before = round(
+            max(
+                0.0,
+                segment.start_seconds
+                - (
+                    segments[index - 1].end_seconds
+                    if index > 0
+                    else segment.start_seconds
+                ),
+            ),
+            6,
+        )
+        pause_after = round(
+            max(
+                0.0,
+                (
+                    segments[index + 1].start_seconds
+                    if index + 1 < len(segments)
+                    else segment.end_seconds
+                )
+                - segment.end_seconds,
+            ),
+            6,
+        )
+        split_units = (
+            _internal_render_units(
+                segment,
+                target,
+                pause_before=pause_before,
+                pause_after=pause_after,
+            )
+            if allow_internal_splits
+            else ()
+        )
+        if split_units:
+            units.extend(split_units)
+            continue
+        units.append(
+            RenderPlanUnit(
+                unit_id=segment.segment_id,
+                parent_segment_id=segment.segment_id.split(
+                    "-retained-",
+                    maxsplit=1,
+                )[0],
+                source_segment_id=segment.segment_id,
+                source_start_seconds=segment.start_seconds,
+                source_end_seconds=segment.end_seconds,
+                pause_before_seconds=pause_before,
+                pause_after_seconds=pause_after,
+                target_text=target,
+            )
+        )
+    return tuple(units)
+
+
+def _internal_render_units(
+    segment: CanonicalSegment,
+    target: str,
+    *,
+    pause_before: float,
+    pause_after: float,
+) -> tuple[RenderPlanUnit, ...]:
+    target_ranges = _target_render_ranges(target)
+    if len(target_ranges) < 2:
+        return ()
+    source_boundaries = _internal_source_boundaries(segment)
+    required = len(target_ranges) - 1
+    if len(source_boundaries) < required:
+        return ()
+    selected = _select_source_boundaries(
+        source_boundaries,
+        target_ranges,
+        len(target),
+        len(segment.words),
+    )
+    words = segment.words
+    word_offsets = (0, *(item.word_offset for item in selected), len(words))
+    lineage = segment.segment_id.split("-retained-", maxsplit=1)[0]
+    units: list[RenderPlanUnit] = []
+    for index, ((target_start, target_end), word_start, word_end) in enumerate(
+        zip(
+            target_ranges,
+            word_offsets[:-1],
+            word_offsets[1:],
+            strict=True,
+        ),
+        start=1,
+    ):
+        boundary_before = selected[index - 2] if index > 1 else None
+        boundary_after = selected[index - 1] if index <= len(selected) else None
+        units.append(
+            RenderPlanUnit(
+                unit_id=f"{segment.segment_id}--render-{index:02d}",
+                parent_segment_id=lineage,
+                source_segment_id=segment.segment_id,
+                source_start_seconds=words[word_start][1],
+                source_end_seconds=words[word_end - 1][2],
+                pause_before_seconds=(
+                    boundary_before.pause_seconds
+                    if boundary_before is not None
+                    else pause_before
+                ),
+                pause_after_seconds=(
+                    boundary_after.pause_seconds
+                    if boundary_after is not None
+                    else pause_after
+                ),
+                target_text=target[target_start:target_end],
+                internal_split=True,
+                approved_boundary_kind=(
+                    boundary_after.kind if boundary_after is not None else None
+                ),
+            )
+        )
+    return tuple(units)
+
+
+def _target_render_ranges(target: str) -> tuple[tuple[int, int], ...]:
+    if len(target) <= MAXIMUM_RENDER_UNIT_CHARACTERS:
+        return ((0, len(target)),)
+    boundaries = [
+        match.end()
+        for match in _TARGET_SENTENCE_BOUNDARY.finditer(target)
+        if 0 < match.end() < len(target)
+    ]
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while len(target) - start > MAXIMUM_RENDER_UNIT_CHARACTERS:
+        choices = [
+            boundary
+            for boundary in boundaries
+            if start < boundary <= start + MAXIMUM_RENDER_UNIT_CHARACTERS
+        ]
+        if not choices:
+            return ()
+        end = choices[-1]
+        ranges.append((start, end))
+        start = end
+    ranges.append((start, len(target)))
+    return tuple(ranges)
+
+
+def _internal_source_boundaries(
+    segment: CanonicalSegment,
+) -> tuple[_InternalRenderBoundary, ...]:
+    if len(segment.words) < 2:
+        return ()
+    recovered: list[dict[str, Any]] = [
+        {
+            "text": text,
+            "start_seconds": start,
+            "end_seconds": end,
+            "sentence_end": False,
+            "sentence_suffix": "",
+            "punctuation_confident": False,
+        }
+        for text, start, end in segment.words
+    ]
+    recover_sentence_punctuation(recovered, segment.text)
+    boundaries: list[_InternalRenderBoundary] = []
+    for offset in range(1, len(recovered)):
+        previous = recovered[offset - 1]
+        following = recovered[offset]
+        gap = max(
+            0.0,
+            float(following["start_seconds"])
+            - float(previous["end_seconds"]),
+        )
+        kind = (
+            "sentence"
+            if bool(previous.get("sentence_end"))
+            else "pause" if gap >= 0.30 else ""
+        )
+        if not kind:
+            continue
+        boundaries.append(
+            _InternalRenderBoundary(
+                word_offset=offset,
+                kind=kind,
+                boundary_seconds=round(
+                    (
+                        float(previous["end_seconds"])
+                        + float(following["start_seconds"])
+                    )
+                    / 2,
+                    6,
+                ),
+                pause_seconds=round(gap, 6),
+            )
+        )
+    return tuple(boundaries)
+
+
+def _select_source_boundaries(
+    candidates: tuple[_InternalRenderBoundary, ...],
+    target_ranges: tuple[tuple[int, int], ...],
+    target_length: int,
+    source_word_count: int,
+) -> tuple[_InternalRenderBoundary, ...]:
+    selected: list[_InternalRenderBoundary] = []
+    start_index = 0
+    required = len(target_ranges) - 1
+    for target_range in target_ranges[:-1]:
+        remaining = required - len(selected) - 1
+        available = candidates[start_index : len(candidates) - remaining]
+        ratio = target_range[1] / target_length
+        chosen = min(
+            available,
+            key=lambda item: abs(item.word_offset / source_word_count - ratio),
+        )
+        selected.append(chosen)
+        start_index = candidates.index(chosen, start_index) + 1
+    return tuple(selected)
 
 
 def _resolve_decision(

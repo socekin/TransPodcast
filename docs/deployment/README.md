@@ -22,8 +22,11 @@ Before deploying real processing:
 - Xcode Command Line Tools provide Git and make on the macOS host.
 - `.env` exists locally and is not tracked by Git.
 - Only content that may be used for learning or research will be processed.
-- Codex CLI is installed and authenticated for the same macOS user that runs
-  TransPodcast; `codex --version` and `codex login status` both succeed.
+- The selected Agent CLI is installed and authenticated for the same macOS
+  user that runs TransPodcast: `codex --version` and `codex login status` for
+  Codex, or `claude --version` and `claude auth status` for Claude Code.
+- Google Chrome or another Chromium-based browser is installed for YouTube
+  source downloads.
 - Modal CLI is authenticated to the intended workspace.
 - Cloudflare and R2 are configured only if remote private listening is needed.
 - Feed tokens, account IDs, API tokens, and private URLs are kept out of Git and
@@ -34,7 +37,7 @@ Before deploying real processing:
 ## Order of operations
 
 1. Configure local settings in `.env`.
-2. Install and authenticate Codex CLI.
+2. Install and authenticate Codex CLI or Claude Code.
 3. Deploy or verify the Modal speech apps for every configured profile.
 4. Start TransPodcast Host manually and inspect Setup Readiness. Starting the
    worker may contact configured providers, but does not start a GPU speech

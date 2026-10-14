@@ -32,7 +32,12 @@ TransPodcast 面向希望用中文完整收听英文长播客的用户。支持�
 
 - **🎧 完整节目转译：** 将英文长播客转录、翻译并合成为完整的中文音频，而不是仅生成摘要或文字稿。
 - **👥 多人声音还原：** 识别节目中的不同说话人，并在中文版本中分别保留其音色特征和表达方式。
-- **✍️ 翻译与审校：** 结合完整上下文翻译对话，并通过独立审校检查术语、数字、语义和口语表达。
+- **🧭 准确的说话人归属：** 先用确定性规则和密集声纹校正逐词归属，合并零碎的误识别标签，整段纠正被分错的发言，再由 Agent 复核有风险的交接位置。
+- **⏱️ 节奏与停顿还原：** 按原节目的停顿和换人节奏拼接中文配音，限制句中过长的静音，让对话听起来更自然。
+- **✍️ 翻译与审校：** 结合完整上下文翻译对话，并通过独立审校检查术语、数字、语义和口语表达；新的听感翻译策略使用口语化数字，并通过术语表统一人名和产品名。
+- **🔁 听感审计与自动重配：** 配音完成后自动回听每个单元，检查漏读、多读、夹杂英文、语速、长停顿和音色偏移；严重问题会自动重新配音一次，仍未解决的问题需要人工确认。
+- **🤖 可选处理 Agent：** 默认使用 Codex CLI，也可以在设置中切换为 Claude Code；每个处理任务创建后固定所用 Agent。
+- **🎙️ 可选配音模型：** 可在 IndexTTS 2.0 与 IndexTTS 2.5 之间选择，每个处理任务创建后固定所用模型。
 - **✂️ 广告与开头高光移除：** 识别可明确分离的第三方付费广告和拼接式开头高光，不将其纳入最终中文音频；不确定内容会保留，避免误删正文。
 - **🔎 节目发现与筛选：** 支持 YouTube 频道和单集 URL，可依据个人兴趣自动筛选值得处理的节目。
 - **🗣️ 频道声音库：** 持续积累已确认的说话人声音，在同一频道的后续节目中复用。
@@ -64,7 +69,8 @@ TransPodcast 面向希望用中文完整收听英文长播客的用户。支持�
 | --- | --- | --- |
 | 本地运行主机 | 一台可持续运行的 macOS 设备 | 运行 TransPodcast、保存本地数据并提供管理界面 |
 | 本地工具链 | Xcode Command Line Tools（提供 Git 与 make）、Python 3.12–3.14、[uv](https://docs.astral.sh/uv/)、Node.js 22+、npm、FFmpeg | 安装、构建和运行项目 |
-| Codex CLI（必需） | 已安装并完成认证的 [Codex CLI](https://developers.openai.com/codex/cli) | 节目筛选、翻译、审校和节目文案生成 |
+| 处理 Agent CLI（至少一个） | 已安装并完成认证的 [Codex CLI](https://developers.openai.com/codex/cli)（默认），或可选的 [Claude Code](https://code.claude.com/docs/en/setup) | 节目筛选、翻译、审校、说话人归属复核和节目文案生成 |
+| 浏览器 | Google Chrome 或其他 Chromium 内核浏览器 | 下载 YouTube 来源音频时在本机生成访问令牌 |
 | GPU 语音服务 | Modal 账号 | 语音识别、说话人分析和中文语音合成 |
 | 私人播客发布 | Cloudflare 账号、R2 bucket、Worker 和稳定的 HTTPS 域名 | 托管受保护的 RSS feed 与完整节目音频 |
 | 播客客户端 | Apple Podcasts 或其他支持通过 URL 添加 feed 的客户端 | 订阅私人中文播客 |
@@ -103,7 +109,7 @@ make dev
 
 TransPodcast Host 默认地址：<http://transpodcast.localhost:8000>。
 
-上述命令完成依赖安装、项目检查和本地服务启动。后台服务会检查已配置的 Codex、Modal、Cloudflare、Telegram 和 YouTube 能力是否就绪，因此启动后可能产生 provider API 请求；默认手动处理模式不会自动导入节目、启动处理任务或运行 GPU 语音阶段。实际节目处理需要继续完成 [Getting Started](docs/getting-started.md) 中的服务配置。
+上述命令完成依赖安装、项目检查和本地服务启动。后台服务会检查已配置的处理 Agent（Codex 或 Claude Code）、Modal、Cloudflare、Telegram 和 YouTube 能力是否就绪，因此启动后可能产生 provider API 请求；默认手动处理模式不会自动导入节目、启动处理任务或运行 GPU 语音阶段。实际节目处理需要继续完成 [Getting Started](docs/getting-started.md) 中的服务配置。
 
 ## 处理与发布流程
 
@@ -128,6 +134,8 @@ flowchart TB
     Quality --> Queue["8. 待发布"]
 ```
 
+“说话者分析与转录”阶段包含说话人分轨、语音识别、逐词对齐、确定性说话人归属与 Agent 复核，以及按句子和停顿的自然切分。“配音与拼接”阶段按原节目节奏还原停顿，并在配音后完成听感审计和必要的自动重配；“母带与音频质检”直接测量成品的响度、峰值、编码、采样率、声道和码率。
+
 这些节点与 TransPodcast Host 的运行记录一致。运行记录会保留阶段状态和尝试历史，任务中断后可从最近的有效检查点恢复。节目通过母带与音频质检后进入待发布状态，由用户完整试听并人工确认后写入私人 RSS feed。
 
 运行 TransPodcast 的 Mac 即 TransPodcast Host，负责保存工作状态、协调各处理阶段并提供本地 Web 管理界面。计算密集型语音任务在 Modal 上运行；私有 R2 存储和 Cloudflare Worker 负责提供受保护的 RSS 与节目音频。Telegram 仅作为可选通知渠道。
@@ -142,7 +150,10 @@ TransPodcast 组合使用以下语音模型。模型权重不包含在本仓库�
 | [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) | 将英文语音识别为文字 |
 | [Qwen3 ForcedAligner](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B) | 将文字与音频时间精确对齐 |
 | [NVIDIA TitaNet](https://huggingface.co/nvidia/speakerverification_en_titanet_large) | 提取说话人声音特征并辅助身份匹配 |
-| [IndexTTS2](https://github.com/index-tts/index-tts) | 生成带有目标音色和表达特征的中文语音 |
+| [IndexTTS2](https://github.com/index-tts/index-tts) | 生成带有目标音色和表达特征的中文语音（默认） |
+| [IndexTTS 2.5](https://huggingface.co/IndexTeam/IndexTTS-2.5) | 可选的中文语音合成模型，在设置中切换 |
+
+Qwen3-ASR 与 TitaNet 也用于听感审计中的中文回听和音色一致性检查。
 
 部署前请阅读 [Third-party Model Terms](docs/model-licenses.md)，并核对所用模型版本的许可、署名和使用限制。
 

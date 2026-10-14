@@ -28,7 +28,7 @@ def test_application_bootstraps_state_through_alembic(tmp_path) -> None:
         revision = session.scalar(
             text("SELECT version_num FROM alembic_version")
         )
-    assert revision == "0014_owner_console_publication_decisions"
+    assert revision == "0015_processing_run_agent_provider"
 
 
 def test_observability_migration_does_not_invent_a_pending_claim_time(

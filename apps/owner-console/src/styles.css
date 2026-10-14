@@ -4005,6 +4005,59 @@ textarea:focus-visible,
   font-style: normal;
 }
 
+.setting-select-trigger {
+  display: flex;
+  min-width: 220px;
+  height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  padding: 0 11px;
+  outline: 0;
+  color: var(--foreground);
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.setting-select-trigger:focus-visible {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px var(--blue-soft);
+}
+
+.setting-select-positioner {
+  z-index: 30;
+}
+
+.setting-select-popup {
+  min-width: var(--anchor-width);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  padding: 4px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+
+.setting-select-item {
+  display: grid;
+  min-height: 34px;
+  grid-template-columns: 15px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  border-radius: 9px;
+  padding: 5px 8px;
+  outline: 0;
+  font-size: 11px;
+}
+
+.setting-select-item[data-highlighted] {
+  color: var(--blue-dark);
+  background: var(--blue-soft);
+}
+
 .settings-card-footer {
   display: flex;
   min-height: 58px;
@@ -4974,4 +5027,64 @@ textarea:focus-visible,
 
 .review-segment-meta .badge {
   margin-top: 6px;
+}
+
+.review-audit {
+  margin: 10px 14px 0;
+}
+
+.listening-audit {
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface-strong);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.listening-audit[data-blocking] {
+  background: var(--danger-soft);
+}
+
+.listening-audit header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.listening-audit header strong {
+  color: var(--foreground);
+  font-weight: 650;
+}
+
+.listening-audit p {
+  margin: 6px 0 0;
+}
+
+.listening-audit-findings {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 10.5px;
+}
+
+.listening-audit-findings li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.listening-audit-findings strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.listening-audit-findings small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }

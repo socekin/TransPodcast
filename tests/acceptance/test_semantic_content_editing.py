@@ -77,7 +77,7 @@ class EpisodeTenHighlightAnalysis(FakeAnalysisAdapter):
                     end_seconds=65.6,
                     text=(
                         "Hi listeners. Welcome back to Research Signals. Today "
-                        "I am here with Bill McDermott."
+                        "I am here with Avery Stone."
                     ),
                     words=(
                         ("Hi", 47.76, 47.92),
@@ -85,15 +85,15 @@ class EpisodeTenHighlightAnalysis(FakeAnalysisAdapter):
                         ("Welcome", 51.76, 52.24),
                         ("back", 52.24, 52.64),
                         ("to", 52.64, 52.8),
-                        ("No", 52.8, 53.04),
-                        ("Priors", 53.04, 53.6),
+                        ("Research", 52.8, 53.04),
+                        ("Signals", 53.04, 53.6),
                         ("Today", 53.6, 54.0),
                         ("I", 54.0, 54.08),
                         ("am", 54.08, 54.24),
                         ("here", 54.24, 54.56),
                         ("with", 54.56, 54.8),
-                        ("Bill", 54.8, 55.04),
-                        ("McDermott", 55.04, 55.68),
+                        ("Avery", 54.8, 55.04),
+                        ("Stone", 55.04, 55.68),
                     ),
                 ),
                 CanonicalSegment(
@@ -447,7 +447,7 @@ class EpisodeOnePaidAdAnalysis(FakeAnalysisAdapter):
                     start_seconds=1952.226,
                     end_seconds=2144.589,
                     text=(
-                        "This episode is brought to you by Gemini. Visit "
+                        "This episode is brought to you by Globex. Visit "
                         "the product site to learn more"
                     ),
                     words=(
@@ -458,7 +458,7 @@ class EpisodeOnePaidAdAnalysis(FakeAnalysisAdapter):
                         ("to", 1953.4, 1953.55),
                         ("you", 1953.55, 1953.8),
                         ("by", 1953.8, 1954.0),
-                        ("Gemini", 1954.0, 1954.6),
+                        ("Globex", 1954.0, 1954.6),
                         ("Visit", 2142.4, 2142.8),
                         ("more", 2144.249, 2144.589),
                     ),
@@ -518,9 +518,9 @@ class EpisodeOnePaidAdAnalysis(FakeAnalysisAdapter):
                     speaker_label="speaker-01",
                     start_seconds=3301.62,
                     end_seconds=3305.4,
-                    text="Labelbox It seems to me that research has changed",
+                    text="Initech It seems to me that research has changed",
                     words=(
-                        ("Labelbox", 3301.62, 3301.94),
+                        ("Initech", 3301.62, 3301.94),
                         ("It", 3302.2, 3302.3),
                         ("seems", 3302.3, 3302.58),
                         ("to", 3302.58, 3302.7),
@@ -564,12 +564,12 @@ class EpisodeOnePaidAdAnalysis(FakeAnalysisAdapter):
                     speaker_label="speaker-01",
                     start_seconds=4691.5,
                     end_seconds=4695.4,
-                    text="Sardine What is SSI trying to accomplish",
+                    text="Hooli What is Northwind trying to accomplish",
                     words=(
-                        ("Sardine", 4691.5, 4691.781),
+                        ("Hooli", 4691.5, 4691.781),
                         ("What", 4692.1, 4692.34),
                         ("is", 4692.34, 4692.48),
-                        ("SSI", 4692.48, 4692.82),
+                        ("Northwind", 4692.48, 4692.82),
                         ("trying", 4692.82, 4693.22),
                         ("to", 4693.22, 4693.35),
                         ("accomplish", 4693.35, 4695.4),
@@ -682,7 +682,7 @@ class EpisodeOnePaidAdTranslation(FakeTranslationAdapter):
                             "start_segment_id": "seg-0335",
                             "end_segment_id": "seg-0336",
                             "start_anchor": "This separate",
-                            "end_anchor": "Labelbox",
+                            "end_anchor": "Initech",
                             "rationale": (
                                 "A second separate third-party paid "
                                 "advertisement ends before the interview."
@@ -700,7 +700,7 @@ class EpisodeOnePaidAdTranslation(FakeTranslationAdapter):
                             "start_segment_id": "seg-0445",
                             "end_segment_id": "seg-0446",
                             "start_anchor": "Another separate",
-                            "end_anchor": "Sardine",
+                            "end_anchor": "Hooli",
                             "rationale": (
                                 "A third separate third-party paid "
                                 "advertisement ends before the interview."
@@ -767,7 +767,7 @@ def test_paid_ad_boundary_retains_the_editorial_question(
     ]
     assert rendered_analysis["segments"][1]["text"].startswith("I am curious")
     assert rendered_analysis["segments"][3]["text"].startswith("It seems to me")
-    assert rendered_analysis["segments"][5]["text"].startswith("What is SSI")
+    assert rendered_analysis["segments"][5]["text"].startswith("What is Northwind")
 
     detail = client.get(
         f"/api/v1/episodes/{completed['episode_id']}/processing-detail"

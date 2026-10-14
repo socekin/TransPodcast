@@ -45,7 +45,12 @@ class TranslationStalledError(RuntimeError):
 
 
 class TranslationProviderError(RuntimeError):
-    """A Translation Project provider turn failed after reporting usage."""
+    """A Translation Project provider turn failed after reporting usage.
+
+    ``kind`` carries the classified Agent failure (``auth``,
+    ``rate_limit``, ``provider``, or ``schema``) when the runner reported
+    one, so the Processing Service can choose the Retry Policy.
+    """
 
     def __init__(
         self,
@@ -53,7 +58,13 @@ class TranslationProviderError(RuntimeError):
         *,
         input_tokens: int,
         output_tokens: int,
+        kind: str | None = None,
     ) -> None:
         super().__init__(message)
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.kind = kind
+
+
+class TranslationProviderMismatchError(RuntimeError):
+    """A Translation Project belongs to a different Agent provider."""

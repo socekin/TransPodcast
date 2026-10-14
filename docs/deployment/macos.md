@@ -28,14 +28,18 @@ This is the recommended first real setup because logs stay visible.
 
 `deploy/install-launchd.sh` installs per-user LaunchAgents for the API, worker,
 and monthly spend-guardrail resume. Read the generated plist templates first,
-then verify that Codex authentication belongs to the current macOS user:
+then verify that the selected Agent CLI's authentication belongs to the
+current macOS user:
 
 ```shell
 codex --version
 codex login status
+# Only when Claude Code is the selected processing Agent:
+claude --version
+claude auth status
 ```
 
-Install the agents only after both commands succeed:
+Install the agents only after the selected CLI's commands succeed:
 
 ```shell
 ./deploy/install-launchd.sh

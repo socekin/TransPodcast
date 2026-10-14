@@ -7,14 +7,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import event
 
-from transpodcast.boundary_adjudication import (
-    DiscourseAdjudicationResult,
-    DiscourseVerdict,
-    OwnershipDispute,
-)
 from transpodcast.database import Database
 from transpodcast.dependencies import AppDependencies
 from transpodcast.domain import (
@@ -41,18 +37,15 @@ from transpodcast.models import (
     SettingRecord,
     SourceChannelRecord,
 )
-from transpodcast.pipeline_versions import CURRENT_SPEECH_PIPELINE_VERSION
-from transpodcast.speaker_boundary_adjudication import (
-    BoundaryPlanningResult,
-    BoundaryProposal,
-    BoundaryReviewResult,
-    BoundaryReviewVerdict,
-    UnifiedBoundaryCandidate,
+from transpodcast.pipeline_versions import (
+    CURRENT_SPEECH_PIPELINE_VERSION,
+    SPEECH_PIPELINE_V15,
+    analysis_version_for_pipeline,
 )
-from transpodcast.speaker_tail_boundary_repair import (
-    SpeakerTailRepairCandidate,
-    SpeakerTailRepairResult,
-    SpeakerTailRepairVerdict,
+from transpodcast.speaker_ownership_v15 import (
+    SpeakerOwnershipPlan,
+    SpeakerOwnershipPlanningResult,
+    SpeakerOwnershipRegion,
 )
 from transpodcast.storage import LocalPublicationStorage
 
@@ -390,12 +383,14 @@ class FakeTriageAdapter:
         results: dict[str, TriageResult] | None = None,
     ) -> None:
         self.results = results or {}
+        self.invocation_count = 0
 
     def evaluate(
         self,
         candidate: SourceCandidate,
         interest_profile: str,
     ) -> TriageResult:
+        self.invocation_count += 1
         assert candidate.captions
         assert "Product strategy" in interest_profile
         configured = self.results.get(candidate.youtube_video_id)
@@ -417,6 +412,12 @@ class FakeAnalysisAdapter:
     def readiness(self) -> bool:
         return True
 
+    def measure_ownership(
+        self, analysis: SourceAnalysisResult, archive: SourceArchive,
+        ranges: list[tuple[int, int]],
+    ) -> dict[str, Any]:
+        return {"voiceprints": [], "measurements": [], "inference_seconds": 0.0}
+
     def analyze(
         self,
         candidate: SourceCandidate,
@@ -435,9 +436,13 @@ class FakeAnalysisAdapter:
                     start_seconds=0,
                     end_seconds=float(candidate.duration_seconds),
                     text=text,
+                    words=((text, 0.0, float(candidate.duration_seconds)),),
                 ),
             ),
-            pipeline_version=CURRENT_SPEECH_PIPELINE_VERSION,
+            # Like the Modal analysis, report the Source Analysis version.
+            pipeline_version=analysis_version_for_pipeline(
+                candidate.speech_pipeline_version or CURRENT_SPEECH_PIPELINE_VERSION
+            ),
             diarization_model="fixture-sortformer",
             transcription_model="fixture-qwen3-asr",
             alignment_model="fixture-qwen3-aligner",
@@ -449,6 +454,9 @@ class FakeAnalysisAdapter:
                     confidence=0.98,
                 ),
             ),
+            boundary_adjudication_json=json.dumps({
+                "continuity_evidence": {"voiceprints": [], "measured_window_count": 0}
+            }),
             checksum=hashlib.sha256(text.encode()).hexdigest(),
             estimated_cost_usd=0.05,
             call_seconds=(
@@ -558,7 +566,7 @@ class FakeAnalysisAdapter:
         text = "we keep talking and continue here"
         return SourceAnalysisResult(
             segments=segments,
-            pipeline_version=CURRENT_SPEECH_PIPELINE_VERSION,
+            pipeline_version=SPEECH_PIPELINE_V15,
             diarization_model="fixture-sortformer",
             transcription_model="fixture-qwen3-asr",
             alignment_model="fixture-qwen3-aligner",
@@ -589,168 +597,88 @@ class FakeAnalysisAdapter:
 
 
 class FakeTranslationAdapter:
-    def __init__(self) -> None:
+    """Deterministic Translation Adapter for one fake Agent provider."""
+
+    def __init__(self, provider: str = "fake-codex") -> None:
+        self.provider = provider
         self.invocation_count = 0
+        self.ownership_invocation_count = 0
         self.metadata_invocation_count = 0
-        self.discourse_owner: str | None = None
         self.discourse_error: str | None = None
-        self.adjudicated_disputes: list[OwnershipDispute] = []
-        self.tail_repair_verdicts: dict[
-            str, SpeakerTailRepairVerdict | None
-        ] = {}
-        self.tail_repair_error: str | None = None
-        self.adjudicated_tail_repair_candidates: list[
-            SpeakerTailRepairCandidate
+        self.speaker_ownership_plans: dict[str, SpeakerOwnershipPlan] = {}
+        self.speaker_ownership_reviews: dict[str, SpeakerOwnershipPlan] = {}
+        self.planned_speaker_ownership_regions: list[
+            SpeakerOwnershipRegion
         ] = []
-        self.boundary_proposals: dict[str, BoundaryProposal] = {}
-        self.boundary_reviews: dict[str, BoundaryReviewVerdict] = {}
-        self.planned_boundary_candidates: list[UnifiedBoundaryCandidate] = []
-        self.reviewed_boundary_candidates: list[UnifiedBoundaryCandidate] = []
+        self.reviewed_speaker_ownership_regions: list[
+            SpeakerOwnershipRegion
+        ] = []
 
     def readiness(self) -> bool:
         return True
 
-    def adjudicate_discourse(
+    def plan_ownership_continuity(
+        self, regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult:
+        self.ownership_invocation_count += 1
+        return self.plan_speaker_ownership(regions)
+
+    def review_ownership_continuity(
+        self, regions: Sequence[SpeakerOwnershipRegion],
+        planning: SpeakerOwnershipPlanningResult,
+    ) -> SpeakerOwnershipPlanningResult:
+        self.ownership_invocation_count += 1
+        return self.review_speaker_ownership(regions)
+
+    def plan_speaker_ownership(
         self,
-        disputes: Sequence[OwnershipDispute],
-    ) -> DiscourseAdjudicationResult:
-        self.adjudicated_disputes.extend(disputes)
+        regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult:
+        self.planned_speaker_ownership_regions.extend(regions)
         if self.discourse_error is not None:
-            return DiscourseAdjudicationResult(
-                verdicts={},
+            return SpeakerOwnershipPlanningResult(
+                plans={},
                 error=self.discourse_error,
             )
-        return DiscourseAdjudicationResult(
-            verdicts={
-                dispute.dispute_id: DiscourseVerdict(
-                    owner=self.discourse_owner
-                    or dispute.current_owner,
-                    rationale="Deterministic fixture verdict.",
-                )
-                for dispute in disputes
-            },
-            input_tokens=40,
-            output_tokens=15,
-            provider="fake-codex",
-            model="deterministic-discourse-fixture",
-            cli_version="fixture-cli 1.0",
-        )
-
-    def adjudicate_speaker_tail_repairs(
-        self,
-        candidates: Sequence[SpeakerTailRepairCandidate],
-    ) -> SpeakerTailRepairResult:
-        self.adjudicated_tail_repair_candidates.extend(candidates)
-        if self.tail_repair_error is not None:
-            return SpeakerTailRepairResult(
-                verdicts={},
-                error=self.tail_repair_error,
-            )
-        return SpeakerTailRepairResult(
-            verdicts={
-                candidate.candidate_id: self.tail_repair_verdicts.get(
-                    candidate.candidate_id,
-                    SpeakerTailRepairVerdict(
+        return SpeakerOwnershipPlanningResult(
+            plans={
+                region.region_id: self.speaker_ownership_plans.get(
+                    region.region_id,
+                    SpeakerOwnershipPlan(
                         action="keep",
-                        rationale="Deterministic fixture keep verdict.",
+                        rationale="Deterministic fixture keep plan.",
                     ),
                 )
-                for candidate in candidates
+                for region in regions
             },
-            input_tokens=30 if candidates else 0,
-            output_tokens=10 if candidates else 0,
-            provider="fake-codex" if candidates else "",
-            model="deterministic-tail-repair-fixture" if candidates else "",
-            cli_version="fixture-cli 1.0" if candidates else "",
+            input_tokens=40 if regions else 0,
+            output_tokens=15 if regions else 0,
+            provider=self.provider if regions else "",
+            model="deterministic-ownership-planner" if regions else "",
+            cli_version="fixture-cli 1.0" if regions else "",
         )
 
-    def plan_speaker_boundaries(
+    def review_speaker_ownership(
         self,
-        candidates: Sequence[UnifiedBoundaryCandidate],
-    ) -> BoundaryPlanningResult:
-        self.planned_boundary_candidates.extend(candidates)
-        if self.discourse_error is not None or self.tail_repair_error is not None:
-            return BoundaryPlanningResult(
-                proposals={},
-                error=self.discourse_error or self.tail_repair_error,
-            )
-        proposals: dict[str, BoundaryProposal | None] = {}
-        for candidate in candidates:
-            legacy_id = (
-                f"tail-repair::{candidate.current_segment_id}::"
-                f"{candidate.next_segment_id}::"
-                f"{candidate.current_words[0].start_seconds:.3f}"
-            )
-            legacy = self.tail_repair_verdicts.get(legacy_id)
-            if legacy is not None and legacy.action == "shift_tail":
-                proposals[candidate.candidate_id] = BoundaryProposal(
-                    action="split_to_next",
-                    target_segment_id=candidate.current_segment_id,
-                    target_owner=candidate.next_owner,
-                    split_before_word_index=(
-                        legacy.shift_before_word_index
-                        if legacy.shift_before_word_index is not None
-                        else -1
-                    ),
-                    rationale=legacy.rationale,
-                )
-            elif (
-                self.discourse_owner is not None
-                and candidate.ownership_dispute_ids
-                and self.discourse_owner
-                in {candidate.current_owner, candidate.next_owner}
-            ):
-                target_segment_id = (
-                    candidate.current_segment_id
-                    if candidate.current_owner != self.discourse_owner
-                    else candidate.next_segment_id
-                )
-                proposals[candidate.candidate_id] = BoundaryProposal(
-                    action="reassign_whole",
-                    target_segment_id=target_segment_id,
-                    target_owner=self.discourse_owner,
-                    rationale="Deterministic fixture whole reassignment.",
-                )
-            else:
-                proposals[candidate.candidate_id] = self.boundary_proposals.get(
-                    candidate.candidate_id,
-                    BoundaryProposal(
+        regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult:
+        self.reviewed_speaker_ownership_regions.extend(regions)
+        return SpeakerOwnershipPlanningResult(
+            plans={
+                region.region_id: self.speaker_ownership_reviews.get(
+                    region.region_id,
+                    SpeakerOwnershipPlan(
                         action="keep",
-                        rationale="Deterministic fixture keep proposal.",
+                        rationale="Deterministic fixture keep review.",
                     ),
                 )
-        return BoundaryPlanningResult(
-            proposals=proposals,
-            input_tokens=40 if candidates else 0,
-            output_tokens=15 if candidates else 0,
-            provider="fake-codex" if candidates else "",
-            model="deterministic-boundary-planner" if candidates else "",
-            cli_version="fixture-cli 1.0" if candidates else "",
-        )
-
-    def review_speaker_boundaries(
-        self,
-        candidates: Sequence[UnifiedBoundaryCandidate],
-        proposals: dict[str, BoundaryProposal | None],
-    ) -> BoundaryReviewResult:
-        del proposals
-        self.reviewed_boundary_candidates.extend(candidates)
-        return BoundaryReviewResult(
-            verdicts={
-                candidate.candidate_id: self.boundary_reviews.get(
-                    candidate.candidate_id,
-                    BoundaryReviewVerdict(
-                        verdict="approve",
-                        rationale="Deterministic fixture approval.",
-                    ),
-                )
-                for candidate in candidates
+                for region in regions
             },
-            input_tokens=30 if candidates else 0,
-            output_tokens=10 if candidates else 0,
-            provider="fake-codex" if candidates else "",
-            model="deterministic-boundary-reviewer" if candidates else "",
-            cli_version="fixture-cli 1.0" if candidates else "",
+            input_tokens=30 if regions else 0,
+            output_tokens=10 if regions else 0,
+            provider=self.provider if regions else "",
+            model="deterministic-ownership-reviewer" if regions else "",
+            cli_version="fixture-cli 1.0" if regions else "",
         )
 
     def translate(self, candidate: SourceCandidate) -> TranslationResult:
@@ -760,7 +688,7 @@ class FakeTranslationAdapter:
             overview="A complete translated conversation about durable products.",
             target_locale="zh-CN",
             segments=("A product should preserve its original intent.",),
-            provider="fake-codex",
+            provider=self.provider,
             model="deterministic-fixture",
             input_tokens=120,
             output_tokens=80,
@@ -799,7 +727,7 @@ class FakeTranslationAdapter:
         }
         return PublicationMetadataResult(
             artifact_json=json.dumps(artifact, ensure_ascii=False),
-            provider="fake-codex",
+            provider=self.provider,
             model="deterministic-metadata-fixture",
             input_tokens=30,
             output_tokens=20,
@@ -843,6 +771,9 @@ class FakeSpeechAdapter:
         self.last_analysis_json: str | None = None
 
     def readiness(self) -> bool:
+        return True
+
+    def listening_audit_readiness(self) -> bool:
         return True
 
     def render(
@@ -907,12 +838,20 @@ class FakeTelegramAdapter:
 
 @dataclass(frozen=True)
 class AcceptanceHarness:
+    """Ready dependencies with deterministic fakes for both Agent providers.
+
+    ``codex`` serves the default provider through ``translation``; ``claude``
+    is registered under ``agent_translations`` so tests can select it with
+    the ``agent_provider`` setting.
+    """
+
     dependencies: AppDependencies
     codex: FakeTranslationAdapter
     modal: FakeSpeechAdapter
     telegram: FakeTelegramAdapter
     storage: LocalPublicationStorage
     feed_token: str
+    claude: FakeTranslationAdapter
 
     @classmethod
     def ready(cls, root: Path) -> AcceptanceHarness:
@@ -926,6 +865,7 @@ class AcceptanceHarness:
         triage_results: dict[str, TriageResult] | None,
     ) -> AcceptanceHarness:
         codex = FakeTranslationAdapter()
+        claude = FakeTranslationAdapter(provider="fake-claude")
         modal = FakeSpeechAdapter()
         telegram = FakeTelegramAdapter()
         storage = LocalPublicationStorage(root / "object-storage")
@@ -957,6 +897,8 @@ class AcceptanceHarness:
             artifact_root=root / "artifacts",
             analysis=FakeAnalysisAdapter(),
             feed_token_path=root / "secrets" / "feed-token",
+            agent_translations={"claude": claude},
+            agent_triage={"claude": FakeTriageAdapter(triage_results)},
         )
         return cls(
             dependencies=dependencies,
@@ -965,6 +907,7 @@ class AcceptanceHarness:
             telegram=telegram,
             storage=storage,
             feed_token=feed_token,
+            claude=claude,
         )
 
     @property

@@ -170,7 +170,7 @@ function processingPayload(ruled: boolean) {
     },
     speakers: [
       { id: 11, display_name: "主持人" },
-      { id: 12, display_name: "Karpathy" }
+      { id: 12, display_name: "Rivera" }
     ],
     segments: [
       {
@@ -202,7 +202,7 @@ function processingPayload(ruled: boolean) {
         ordinal: 2,
         segment_id: "seg-0002",
         speaker_label: "speaker-02",
-        speaker: { id: 12, display_name: "Karpathy" },
+        speaker: { id: 12, display_name: "Rivera" },
         source_start_seconds: 10,
         source_end_seconds: 10.5,
         output_start_seconds: 9,
@@ -476,6 +476,104 @@ describe("Processing Detail tab", () => {
     ).toBeInTheDocument();
   });
 
+  it("lists Listening Audit findings with a listen action", async () => {
+    const finding = {
+      unit_id: "seg-0002",
+      parent_segment_id: "seg-0002",
+      kind: "english_leakage",
+      severity: "soft",
+      detail: "unexpected Latin: okay",
+      output_start_seconds: 9,
+      output_end_seconds: 9.6
+    };
+    const audit = {
+      status: "complete",
+      policy_version: "listening-audit-v1",
+      scope: "episode",
+      unit_count: 2,
+      mean_cer: 0.04,
+      hard_count: 0,
+      soft_count: 1,
+      unavailable_count: 0,
+      hard_unit_ids: [],
+      blocking_unit_ids: [],
+      owner_acknowledged: false,
+      findings: [finding],
+      retry: null,
+      gpu_seconds: 3.1
+    };
+    const detail = processingPayload(true);
+    const processing = {
+      ...detail,
+      summary: { ...detail.summary, listening_audit: audit },
+      segments: detail.segments.map((segment) =>
+        segment.ordinal === 2
+          ? { ...segment, listening_audit_findings: [finding] }
+          : { ...segment, listening_audit_findings: [] }
+      )
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/processing-detail")) {
+          return Promise.resolve(
+            new Response(JSON.stringify(processing), { status: 200 })
+          );
+        }
+        if (url.includes(`/api/v1/episodes/${EPISODE_ID}`)) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                ...episodePayload(),
+                quality_gates: { eligible: true, listening_audit: audit }
+              }),
+              { status: 200 }
+            )
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ items: [] }), { status: 200 })
+        );
+      })
+    );
+    const user = userEvent.setup();
+    render(
+      <PlayerProvider>
+        <EpisodeDetail
+          onNavigate={() => undefined}
+          episodeId={EPISODE_ID}
+        />
+      </PlayerProvider>
+    );
+
+    const panel = await screen.findByRole("region", {
+      name: copy.listeningAudit.title
+    });
+    expect(panel).toHaveTextContent(copy.listeningAudit.kinds.english_leakage);
+    expect(panel).toHaveTextContent(copy.listeningAudit.counts(0, 1, 0));
+    expect(panel).toHaveTextContent("unexpected Latin: okay");
+
+    await user.click(
+      await screen.findByRole("tab", {
+        name: new RegExp(copy.episode.processingTab)
+      })
+    );
+    expect(
+      screen.getByText(copy.listeningAudit.title, { selector: ".badge" })
+    ).toBeInTheDocument();
+    const listen = screen.getAllByRole("button", {
+      name: copy.listeningAudit.listen
+    });
+    expect(listen.length).toBeGreaterThanOrEqual(2);
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockResolvedValue(undefined);
+    await user.click(listen[listen.length - 1]);
+    expect(play).toHaveBeenCalled();
+    play.mockRestore();
+  });
+
   it("uses truthful V14 empty copy for each processing filter", async () => {
     const detail = processingPayload(true);
     detail.summary.pipeline_version = "transpodcast-modal-pipeline-v14";
@@ -694,7 +792,7 @@ describe("Processing Detail tab", () => {
     );
 
     expect(
-      screen.getByText(/Karpathy → 主持人/)
+      screen.getByText(/Rivera → 主持人/)
     ).toHaveTextContent(copy.episode.processingOriginalSpan);
     expect(
       screen.getByText(copy.episode.processingFilterCorrected, {
@@ -742,6 +840,88 @@ describe("Processing Detail tab", () => {
         name: `${copy.episode.processingOverturnPrefix}主持人`
       })
     ).toBeInTheDocument();
+  });
+
+  it("shows V15 Planner and Reviewer evidence without an arbitrary overturn", async () => {
+    const detail = JSON.parse(JSON.stringify(processingPayload(false)));
+    const disputed = detail.segments[1];
+    disputed.counterpart_speaker = null;
+    disputed.adjudication = {
+      kind: "speaker-ownership-adjudication",
+      verdict: "applied-disputed",
+      rationale: "The Planner mutation applied with acoustic conflict.",
+      subject: { start_seconds: 10, end_seconds: 10.5 },
+      evidence: {
+        planner_plan: {
+          action: "assign_spans",
+          rationale: "The conjunction starts the incoming response."
+        },
+        reviewer_plan: {
+          action: "keep",
+          rationale: "The acoustic boundary remains plausible."
+        },
+        applied_plan: {
+          action: "assign_spans",
+          rationale: "The conjunction starts the incoming response.",
+          assignments: [
+            {
+              first_word_index: 1,
+              last_word_index: 1,
+              speaker_label: "speaker-02"
+            }
+          ]
+        },
+        applied_plan_source: "planner",
+        acoustic_conflict: true,
+        voiceprint_evidence: [
+          {
+            owner: "speaker-01",
+            scores: { "speaker-01": 0.82, "speaker-02": 0.31 }
+          }
+        ]
+      }
+    };
+    detail.speakers.push({ id: 13, display_name: "Third Speaker" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify(
+              url.includes("/processing-detail")
+                ? detail
+                : episodePayload()
+            ),
+            { status: 200 }
+          )
+        );
+      })
+    );
+    const user = userEvent.setup();
+    render(
+      <PlayerProvider>
+        <EpisodeDetail
+          onNavigate={() => undefined}
+          episodeId={EPISODE_ID}
+        />
+      </PlayerProvider>
+    );
+
+    await user.click(
+      await screen.findByRole("tab", {
+        name: new RegExp(copy.episode.processingTab)
+      })
+    );
+
+    expect(
+      screen.getByText(/The conjunction starts the incoming response/)
+    ).toHaveTextContent("The acoustic boundary remains plausible.");
+    expect(
+      screen.queryByRole("button", {
+        name: new RegExp(copy.episode.processingOverturnPrefix)
+      })
+    ).not.toBeInTheDocument();
   });
 });
 

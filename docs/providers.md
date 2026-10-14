@@ -7,9 +7,9 @@ before use.
 
 | Capability | Current integration | Required for real processing | Replaceability |
 | --- | --- | --- | --- |
-| Source metadata and media | `yt-dlp` / YouTube | Yes | Implement `SourceAdapter` |
-| Triage, translation, review, metadata | Codex CLI | Yes | Implement the agent protocols |
-| Diarization, ASR, alignment, embeddings, TTS | Modal apps | Yes | Implement analysis and speech adapters |
+| Source metadata and media | `yt-dlp` / YouTube, with a local Chromium-based browser for proof-of-origin tokens | Yes | Implement `SourceAdapter` |
+| Triage, translation, review, Speaker ownership review, metadata | Codex CLI (default) or Claude Code CLI | Yes, one selected provider | Implement the agent protocols |
+| Diarization, ASR, alignment, embeddings, TTS, Listening Audit | Modal apps | Yes | Implement analysis and speech adapters |
 | Workflow state | Local SQLite | Yes | Core persistence contract |
 | Private object storage | Local filesystem or Cloudflare R2 | R2 only for remote feed | Implement publication storage |
 | Private feed edge | Cloudflare Worker | Only for remote feed | Replace with an equivalent token gate |
@@ -28,8 +28,8 @@ guarantee and cannot stop charges outside TransPodcast.
 ## Data sent to providers
 
 - The source provider sees source discovery and media retrieval requests.
-- The agent provider receives the transcript or bounded review context needed
-  for language tasks.
+- The selected agent provider (Codex or Claude Code) receives the transcript
+  or bounded review context needed for language tasks.
 - Modal receives source or reference audio and text needed for the selected
   speech stage.
 - Cloudflare stores and serves generated private publication objects.

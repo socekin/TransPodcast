@@ -42,14 +42,37 @@ exist, TransPodcast generates a cryptographically random token on first start
 and writes it to the ignored runtime directory with owner-only permissions.
 Treat the complete private feed URL as a secret because it contains that token.
 
-## Codex
+## Agent providers
 
-`TRANSPODCAST_CODEX_EXECUTABLE` selects the authenticated Codex CLI executable.
-Install and sign in as the same macOS user that runs TransPodcast, then verify
-`codex --version` and `codex login status`. `TRANSPODCAST_CODEX_MODEL` is
-optional and allows an explicit model override. Authentication remains in the
-CLI's own local store and must never be copied into this repository or an
-artifact. See the official [Codex CLI guide](https://developers.openai.com/codex/cli).
+TransPodcast runs triage, translation, review, Speaker ownership review, and
+publication metadata through a local Agent CLI. Codex CLI is the default
+provider. Claude Code is optional: install it, then select **Claude** as the
+processing Agent in **Settings**. The selection applies to Processing Runs
+created or explicitly reprocessed afterwards; each run keeps its provider for
+retries and revisions. Setup Readiness reports both CLIs, and only the selected
+provider blocks processing.
+
+| Variable | Purpose |
+| --- | --- |
+| `TRANSPODCAST_CODEX_EXECUTABLE` | Codex CLI executable (default `codex`) |
+| `TRANSPODCAST_CODEX_MODEL` | Optional Codex model override |
+| `TRANSPODCAST_CLAUDE_EXECUTABLE` | Claude Code CLI executable (default `claude`) |
+| `TRANSPODCAST_CLAUDE_MODEL` | Optional Claude Code model or alias |
+| `TRANSPODCAST_CLAUDE_EFFORT` | Optional effort: `low`, `medium`, `high`, `xhigh`, or `max` |
+
+Install and sign in to each CLI as the same macOS user that runs TransPodcast.
+Verify Codex with `codex --version` and `codex login status`, and Claude Code
+with `claude --version` and `claude auth status`. Authentication remains in
+each CLI's own local store and must never be copied into this repository or an
+artifact. See the official [Codex CLI guide](https://developers.openai.com/codex/cli)
+and [Claude Code setup guide](https://code.claude.com/docs/en/setup).
+
+TransPodcast starts Claude Code in an isolated mode that ignores user and
+project settings, CLAUDE.md files, MCP servers, skills, hooks, and plugins.
+It does not pass `ANTHROPIC_API_KEY` to the CLI, so sign in with a Claude
+subscription account (or provide `CLAUDE_CODE_OAUTH_TOKEN` in the service
+environment). Use a Claude Code version that supports the isolation flags;
+readiness reports Claude Code as unavailable otherwise.
 
 ## Modal speech pipeline
 
@@ -74,6 +97,13 @@ starting the worker.
 `TRANSPODCAST_YOUTUBE_PROXY_URL` is optional. Do not put proxy credentials in a
 committed example, issue, log, or screenshot. TransPodcast intentionally does
 not support importing browser cookies or authenticated/private videos.
+
+`TRANSPODCAST_YOUTUBE_BROWSER_EXECUTABLE` points to a local Chromium-based
+browser executable. Source media downloads use it to generate YouTube
+proof-of-origin tokens without cookies or a signed-in profile. The default is
+the Google Chrome executable on macOS; quote the value in `.env` because the
+path contains spaces. Setup Readiness reports the source adapter as unavailable
+when the executable is missing.
 
 ## Telegram
 

@@ -29,6 +29,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copy } from "../i18n/zh-CN";
 import type { View } from "../components/Shell";
 import {
+  ListeningAuditFindingList,
+  ListeningAuditPanel
+} from "../components/ListeningAudit";
+import {
   Badge,
   Button,
   Card,
@@ -36,6 +40,7 @@ import {
 } from "../components/ui";
 import {
   api,
+  asListeningAudit,
   type ApiDirectSourceVideoImport,
   type ApiEpisodeDetail,
   type ApiEpisodeLibraryItem,
@@ -1195,6 +1200,9 @@ export function EpisodeDetail({
   );
   const qualityReady =
     realEpisode?.quality_gates.eligible !== false;
+  const episodeAudit = asListeningAudit(
+    realEpisode?.quality_gates.listening_audit
+  );
   const recoveryExpired =
     realEpisode?.state === "deleted" &&
     realEpisode.recoverable === false;
@@ -1680,6 +1688,15 @@ export function EpisodeDetail({
               </div>
             ) : null}
 
+            {episodeAudit ? (
+              <div className="review-audit">
+                <ListeningAuditPanel
+                  audit={episodeAudit}
+                  onListen={listenToOutput}
+                />
+              </div>
+            ) : null}
+
             <div className="review-script-toolbar">
               <div
                 className="segmented-tabs"
@@ -2120,6 +2137,23 @@ export function EpisodeDetail({
                           }
                         </span>
                       ) : null}
+                      {processingDetail.summary.speaker_ownership_v15
+                        ?.region_count ? (
+                        <span>
+                          {copy.episode.processingSummaryOwnershipRepairs}
+                          <strong>
+                            {
+                              processingDetail.summary.speaker_ownership_v15
+                                .changed_word_count
+                            }
+                          </strong>
+                          · {copy.episode.processingSummaryReviewed} {" "}
+                          {
+                            processingDetail.summary.speaker_ownership_v15
+                              .region_count
+                          }
+                        </span>
+                      ) : null}
                       {processingDetail.summary.content_edit
                         .excluded_count > 0 ? (
                         <span>
@@ -2133,6 +2167,21 @@ export function EpisodeDetail({
                           · {processingDetail.summary.content_edit
                             .excluded_source_seconds.toFixed(1)}{" "}
                           {copy.episode.processingSummarySeconds}
+                        </span>
+                      ) : null}
+                      {processingDetail.summary.listening_audit ? (
+                        <span>
+                          {copy.listeningAudit.summaryLabel}
+                          <strong>
+                            {copy.listeningAudit.counts(
+                              processingDetail.summary.listening_audit
+                                .hard_count,
+                              processingDetail.summary.listening_audit
+                                .soft_count,
+                              processingDetail.summary.listening_audit
+                                .unavailable_count
+                            )}
+                          </strong>
                         </span>
                       ) : null}
                       {processingDetail.summary.pipeline_version ? (
@@ -2189,10 +2238,13 @@ export function EpisodeDetail({
                         // records without one (two-person episodes).
                         const counterpart =
                           segment.counterpart_speaker ??
-                          processingDetail.speakers.find(
-                            (speaker) =>
-                              speaker.id !== segment.speaker?.id
-                          ) ??
+                          (segment.adjudication?.kind ===
+                          "speaker-ownership-adjudication"
+                            ? null
+                            : processingDetail.speakers.find(
+                                (speaker) =>
+                                  speaker.id !== segment.speaker?.id
+                              )) ??
                           null;
                         return (
                           <article
@@ -2235,6 +2287,19 @@ export function EpisodeDetail({
                                   {copy.episode.processingFilterArchived}
                                 </Badge>
                               ) : null}
+                              {segment.listening_audit_findings?.length ? (
+                                <Badge
+                                  tone={
+                                    segment.listening_audit_findings.some(
+                                      (finding) => finding.severity === "hard"
+                                    )
+                                      ? "danger"
+                                      : "warning"
+                                  }
+                                >
+                                  {copy.listeningAudit.title}
+                                </Badge>
+                              ) : null}
                               {segment.content_edit ? (
                                 <Badge
                                   tone={
@@ -2258,6 +2323,65 @@ export function EpisodeDetail({
                               {segment.adjudication ? (
                                 <p className="processing-evidence">
                                   {segment.adjudication.kind ===
+                                  "speaker-ownership-adjudication" ? (
+                                    <>
+                                      {
+                                        copy.episode
+                                          .processingOwnershipPlanner
+                                      }
+                                      {": "}
+                                      {segment.adjudication.evidence
+                                        .planner_plan?.rationale ??
+                                        copy.episode
+                                          .processingDiscourseAbstained}
+                                      {" ｜ "}
+                                      {
+                                        copy.episode
+                                          .processingOwnershipReviewer
+                                      }
+                                      {": "}
+                                      {segment.adjudication.evidence
+                                        .reviewer_plan?.rationale ??
+                                        copy.episode
+                                          .processingDiscourseAbstained}
+                                      {" ｜ "}
+                                      {
+                                        copy.episode
+                                          .processingOwnershipApplied
+                                      }
+                                      {": "}
+                                      {segment.adjudication.evidence
+                                        .applied_plan_source ??
+                                        copy.episode
+                                          .processingOwnershipPreserved}
+                                      {segment.adjudication.evidence
+                                        .acoustic_conflict
+                                        ? ` · ${copy.episode.processingOwnershipAcousticConflict}`
+                                        : ""}
+                                      {segment.adjudication.evidence
+                                        .voiceprint_evidence?.length ? (
+                                        <>
+                                          {" ｜ "}
+                                          {
+                                            copy.episode
+                                              .processingVoiceprint
+                                          }
+                                          {": "}
+                                          {segment.adjudication.evidence.voiceprint_evidence
+                                            .map(
+                                              (item) =>
+                                                `${speakerNameByLabel.get(item.owner) ?? formatSpeakerLabel(item.owner)} (${Object.entries(item.scores)
+                                                  .map(
+                                                    ([label, score]) =>
+                                                      `${speakerNameByLabel.get(label) ?? formatSpeakerLabel(label)} ${Math.round(score * 100)}`
+                                                  )
+                                                  .join(" / ")})`
+                                            )
+                                            .join(" · ")}
+                                        </>
+                                      ) : null}
+                                    </>
+                                  ) : segment.adjudication.kind ===
                                   "speaker-tail-boundary-repair" ? (
                                     <>
                                       {segment.adjudication.verdict ===
@@ -2401,6 +2525,12 @@ export function EpisodeDetail({
                                     </span>
                                   ) : null}
                                 </p>
+                              ) : null}
+                              {segment.listening_audit_findings?.length ? (
+                                <ListeningAuditFindingList
+                                  findings={segment.listening_audit_findings}
+                                  onListen={listenToOutput}
+                                />
                               ) : null}
                               <div className="processing-actions">
                                 <Button

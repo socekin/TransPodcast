@@ -97,7 +97,11 @@ class Qwen3Transcriber:
         torch.cuda.reset_peak_memory_stats()
 
     @modal.method()
-    def transcribe(self, audio_bytes: bytes) -> dict:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        language: str = "English",
+    ) -> dict:
         import torch
 
         audio_path = Path("/tmp/source-16k.wav")
@@ -107,7 +111,7 @@ class Qwen3Transcriber:
 
         results = self.model.transcribe(
             audio=str(audio_path),
-            language="English",
+            language=language,
             return_time_stamps=True,
         )
         if not results:
@@ -136,9 +140,41 @@ class Qwen3Transcriber:
             "words": words,
             "gpu_name": torch.cuda.get_device_name(),
             "inference_seconds": time.perf_counter() - started_at,
-            "peak_gpu_memory_gib": (
-                torch.cuda.max_memory_allocated() / (1024**3)
-            ),
+            "peak_gpu_memory_gib": (torch.cuda.max_memory_allocated() / (1024**3)),
+        }
+
+    @modal.method()
+    def transcribe_clips(
+        self,
+        clips: dict[str, bytes],
+        language: str = "Chinese",
+    ) -> dict:
+        """Transcribe many short clips without forced alignment.
+
+        Used by the Listening Audit to back-transcribe rendered units.
+        """
+        import torch
+
+        torch.cuda.reset_peak_memory_stats()
+        started_at = time.perf_counter()
+        transcripts: dict[str, str] = {}
+        for name, audio_bytes in sorted(clips.items()):
+            audio_path = Path("/tmp") / f"clip-{len(transcripts):05d}.wav"
+            audio_path.write_bytes(audio_bytes)
+            results = self.model.transcribe(
+                audio=str(audio_path),
+                language=language,
+                return_time_stamps=False,
+            )
+            transcripts[name] = results[0].text if results else ""
+        return {
+            "asr_model_id": ASR_MODEL_ID,
+            "asr_model_revision": ASR_MODEL_REVISION,
+            "language": language,
+            "transcripts": transcripts,
+            "gpu_name": torch.cuda.get_device_name(),
+            "inference_seconds": time.perf_counter() - started_at,
+            "peak_gpu_memory_gib": (torch.cuda.max_memory_allocated() / (1024**3)),
         }
 
 
@@ -150,12 +186,16 @@ def sha256(path: Path) -> str:
 def main(
     audio_path: str = DEFAULT_AUDIO_PATH,
     output_path: str = DEFAULT_OUTPUT_PATH,
+    language: str = "English",
 ) -> None:
     source_path = Path(audio_path)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    result = Qwen3Transcriber().transcribe.remote(source_path.read_bytes())
+    result = Qwen3Transcriber().transcribe.remote(
+        source_path.read_bytes(),
+        language=language,
+    )
     result.update(
         {
             "source_file": source_path.name,

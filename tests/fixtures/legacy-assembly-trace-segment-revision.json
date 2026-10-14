@@ -1,0 +1,255 @@
+{
+ "remote_calls": [
+  {
+   "app": "transpodcast-pipeline-indextts2",
+   "class": "<renderer-class>",
+   "method": "render",
+   "units": [
+    {
+     "segment_id": "seg-0002",
+     "speaker_id": "speaker-02",
+     "source_segment_id": "seg-0002",
+     "source_start_seconds": 4.7,
+     "source_end_seconds": 6.0,
+     "target_text": "Reply.",
+     "parent_segment_id": "seg-0002",
+     "pause_before_seconds": 0.7,
+     "pause_after_seconds": 0.0,
+     "internal_split": false,
+     "approved_boundary_kind": null
+    }
+   ],
+   "keywords": {
+    "emotion_alpha": 0.8,
+    "seed": 42
+   }
+  }
+ ],
+ "commands": [
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-i",
+   "<tmp>/output/rendered-segments/segment-0003.wav",
+   "-ar",
+   "48000",
+   "-ac",
+   "1",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-render>/revision-unit-0001.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-f",
+   "concat",
+   "-safe",
+   "0",
+   "-i",
+   "<transpodcast-render>/revision-units.txt",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-render>/revision-replacement.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-ss",
+   "0.000000",
+   "-t",
+   "3.600000",
+   "-i",
+   "<tmp>/prior-preview.m4a",
+   "-ar",
+   "48000",
+   "-ac",
+   "1",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-render>/revision-before.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-ss",
+   "4.900000",
+   "-t",
+   "4.100000",
+   "-i",
+   "<tmp>/prior-preview.m4a",
+   "-ar",
+   "48000",
+   "-ac",
+   "1",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-render>/revision-after.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-i",
+   "<transpodcast-render>/revision-before.wav",
+   "-af",
+   "aresample=48000,afade=t=in:st=0:d=0.01,areverse,afade=t=in:st=0:d=0.01,areverse",
+   "-ar",
+   "48000",
+   "-ac",
+   "1",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-assembly>/prepared-0001.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-i",
+   "<transpodcast-render>/revision-replacement.wav",
+   "-af",
+   "aresample=48000,afade=t=in:st=0:d=0.01,areverse,afade=t=in:st=0:d=0.01,areverse",
+   "-ar",
+   "48000",
+   "-ac",
+   "1",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-assembly>/prepared-0002.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-i",
+   "<transpodcast-render>/revision-after.wav",
+   "-af",
+   "aresample=48000,afade=t=in:st=0:d=0.01,areverse,afade=t=in:st=0:d=0.01,areverse",
+   "-ar",
+   "48000",
+   "-ac",
+   "1",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-assembly>/prepared-0003.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-f",
+   "concat",
+   "-safe",
+   "0",
+   "-i",
+   "<transpodcast-assembly>/concat.txt",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-assembly>/raw-master.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-i",
+   "<transpodcast-assembly>/raw-master.wav",
+   "-af",
+   "acompressor=threshold=0.125:ratio=1.5:attack=20:release=250:knee=2:makeup=1",
+   "-ar",
+   "48000",
+   "-ac",
+   "1",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-assembly>/compressed-master.wav"
+  ],
+  [
+   "ffmpeg",
+   "-hide_banner",
+   "-loglevel",
+   "error",
+   "-y",
+   "-i",
+   "<transpodcast-assembly>/compressed-master.wav",
+   "-ar",
+   "48000",
+   "-ac",
+   "2",
+   "-c:a",
+   "pcm_s24le",
+   "<transpodcast-assembly>/compressed-master-stereo.wav"
+  ]
+ ],
+ "mastered": [
+  {
+   "source": "compressed-master-stereo.wav",
+   "publication": "publication.m4a",
+   "rendered_segment_count": 3
+  }
+ ],
+ "segment_timings": [
+  {
+   "start_seconds": 0.0,
+   "end_seconds": 2.7
+  },
+  {
+   "start_seconds": 3.6,
+   "end_seconds": 4.85
+  }
+ ],
+ "rendered_segments": [
+  {
+   "ordinal": 3,
+   "segment_id": "seg-0002",
+   "path": "<tmp>/output/rendered-segments/segment-0003.wav",
+   "sha256": "22e9792d032847c6cee05b0829135aec9002cea033e4245b7c0a604b9cb0ed01",
+   "duration_seconds": 1.25,
+   "emotion_reference_start_seconds": 4.2,
+   "emotion_reference_end_seconds": 6.0,
+   "speech_text_sha256": "revised-text",
+   "assembled_start_seconds": 3.6,
+   "assembled_end_seconds": 4.85
+  }
+ ],
+ "render_settings_keys": [
+  "chinese_replacement_count",
+  "emotion_alpha",
+  "inference",
+  "lang",
+  "model_load",
+  "native_headroom_target",
+  "pronunciation_annotation_count",
+  "pronunciation_fallback_count",
+  "pronunciation_policy_version",
+  "random_sampling",
+  "renderer",
+  "runtime_revision",
+  "seed",
+  "speech_text_hashes",
+  "speech_text_manifest_sha256",
+  "speech_text_units"
+ ]
+}

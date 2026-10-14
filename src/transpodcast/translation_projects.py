@@ -113,6 +113,8 @@ def mark_translation_project_reprocess(
         state["reviewer_models"] = []
         state["reviewer_turns"] = 0
         state["reviewer_no_progress_turns"] = 0
+        state.pop("reviewer_verdict_repair_turns", None)
+        state.pop("reviewer_listening_repair_turns", None)
         state["phase"] = "reviewing"
         state["validation_status"] = "author_complete"
         state.pop("failed_role", None)
@@ -179,3 +181,32 @@ def _file_digest(path: Path) -> str | None:
     except OSError:
         return None
     return hashlib.sha256(content).hexdigest()
+
+
+def allow_translation_project_provider_rebind(
+    artifact_root: Path,
+    processing_run_id: int,
+) -> None:
+    """Let an explicit reprocess move a run's projects to a new provider.
+
+    A Translation Project never resumes a session created by another Agent
+    provider. Outside an explicit full-episode reprocess a provider change
+    fails clearly; after this marker, the next turn retires the previous
+    provider's sessions and starts fresh ones (see ``codex.py``).
+    """
+
+    run_root = (
+        artifact_root / "translation-projects" / f"run-{processing_run_id}"
+    )
+    for state_path in run_root.glob("*/project.json"):
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(state, dict):
+            continue
+        state["provider_rebind_allowed"] = True
+        state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )

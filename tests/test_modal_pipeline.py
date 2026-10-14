@@ -115,10 +115,10 @@ def test_alignment_preserves_raw_diarization_boundaries() -> None:
     ]
 
 
-def test_v13_is_the_single_auditable_production_pipeline() -> None:
+def test_v15_is_the_single_auditable_production_pipeline() -> None:
     from transpodcast import modal_pipeline
 
-    assert modal_pipeline.PIPELINE_VERSION == "transpodcast-modal-pipeline-v14"
+    assert modal_pipeline.PIPELINE_VERSION == "transpodcast-modal-pipeline-v15"
     assert (
         modal_pipeline._pipeline_version_for_analysis(
             {"pipeline_version": "transpodcast-modal-pipeline-v8"}
@@ -158,9 +158,13 @@ def test_retired_speaker_flags_are_gone_and_stale_env_is_ignored(
     assert not hasattr(settings, "boundary_adjudication_enabled")
 
 
+@pytest.mark.parametrize(
+    "version", ["transpodcast-modal-pipeline-v15", "transpodcast-modal-pipeline-v17"]
+)
 def test_source_analysis_always_persists_replay_evidence(
     tmp_path,
     monkeypatch,
+    version,
 ) -> None:
     from transpodcast import modal_pipeline
 
@@ -236,17 +240,22 @@ def test_source_analysis_always_persists_replay_evidence(
     )
     result = analyze(
         {
+            "analysis": {"pipeline_version": version},
             "source": {
                 "audio_path": str(source),
                 "checksum": checksum,
-            }
+            },
         },
         tmp_path / "output",
     )
 
-    assert result["pipeline_version"] == "transpodcast-modal-pipeline-v14"
+    assert result["pipeline_version"] == version
+    assert (
+        "continuity_evidence" in result["boundary_adjudication"]
+    ) == version.endswith("v17")
+    assert "deterministic_ownership" not in result["boundary_adjudication"]
     assert result["boundary_adjudication"]["policy_version"] == (
-        "boundary-ownership-adjudication-v4"
+        "boundary-ownership-adjudication-v3"
     )
     assert result["diarization_model_revision"] == (
         "fixture-sortformer-revision"
@@ -775,6 +784,24 @@ def test_split_render_plan_gives_every_shard_work_despite_skew() -> None:
     assert all(shard for shard in shards)
 
 
+@pytest.mark.parametrize("segment_count", [1, 2, 3])
+def test_split_render_plan_caps_shards_at_the_segment_count(
+    segment_count: int,
+) -> None:
+    from transpodcast.modal_pipeline import split_render_plan
+
+    plan = [
+        {"segment_id": f"seg-{index:04d}", "target_text": "text"}
+        for index in range(1, segment_count + 1)
+    ]
+
+    shards = split_render_plan(plan, 4)
+
+    assert len(shards) == segment_count
+    assert [item for shard in shards for item in shard] == plan
+    assert all(shard for shard in shards)
+
+
 def test_missing_segment_files_reports_gaps_only() -> None:
     from transpodcast.modal_pipeline import missing_segment_files
 
@@ -786,3 +813,417 @@ def test_missing_segment_files_reports_gaps_only() -> None:
     manifest = {"seg-0001.wav": {}, "seg-0003.wav": {}}
 
     assert missing_segment_files(plan, manifest) == ["seg-0002"]
+
+
+def test_render_plan_units_reach_modal_with_lineage_and_pause_metadata() -> None:
+    from transpodcast.modal_pipeline import _render_units_by_segment
+
+    segments = [
+        {
+            "segment_id": "seg-0001",
+            "speaker_label": "speaker-01",
+            "start_seconds": 0.0,
+            "end_seconds": 4.0,
+        }
+    ]
+    analysis = {
+        "render_plan": {
+            "schema_version": "render-plan-v1",
+            "units": [
+                {
+                    "unit_id": "seg-0001--render-01",
+                    "parent_segment_id": "seg-0001",
+                    "source_segment_id": "seg-0001",
+                    "source_start_seconds": 0.0,
+                    "source_end_seconds": 2.0,
+                    "pause_before_seconds": 0.0,
+                    "pause_after_seconds": 0.4,
+                    "target_text": "Target ",
+                    "internal_split": True,
+                    "approved_boundary_kind": "pause",
+                },
+                {
+                    "unit_id": "seg-0001--render-02",
+                    "parent_segment_id": "seg-0001",
+                    "source_segment_id": "seg-0001",
+                    "source_start_seconds": 2.4,
+                    "source_end_seconds": 4.0,
+                    "pause_before_seconds": 0.4,
+                    "pause_after_seconds": 0.0,
+                    "target_text": "sentence.",
+                    "internal_split": True,
+                    "approved_boundary_kind": None,
+                }
+            ],
+        }
+    }
+
+    units = _render_units_by_segment(analysis, segments, ["Target sentence."])
+
+    assert [unit["unit_id"] for unit in units] == [
+        "seg-0001--render-01",
+        "seg-0001--render-02",
+    ]
+    assert [unit["target_text"] for unit in units] == [
+        "Target ",
+        "sentence.",
+    ]
+    assert units[0]["pause_after_seconds"] == 0.4
+    assert units[1]["pause_before_seconds"] == 0.4
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "updates", "error"),
+    [
+        (
+            "render-plan-v2",
+            {},
+            "Render Plan schema version is unsupported",
+        ),
+        (
+            "render-plan-v1",
+            {"pause_after_seconds": float("nan")},
+            "Render Plan unit timing must be finite",
+        ),
+        (
+            "render-plan-v1",
+            {"source_start_seconds": float("inf")},
+            "Render Plan unit timing must be finite",
+        ),
+        (
+            "render-plan-v1",
+            {"source_start_seconds": 3.0, "source_end_seconds": 2.0},
+            "Render Plan unit source span is invalid",
+        ),
+        (
+            "render-plan-v1",
+            {"source_start_seconds": -0.1},
+            "Render Plan unit is outside its source segment",
+        ),
+        (
+            "render-plan-v1",
+            {"unit_id": None},
+            "Render Plan unit identity is invalid",
+        ),
+        (
+            "render-plan-v1",
+            {"parent_segment_id": 1},
+            "Render Plan unit identity is invalid",
+        ),
+        (
+            "render-plan-v1",
+            {"target_text": None},
+            "Render Plan unit target is invalid",
+        ),
+        (
+            "render-plan-v1",
+            {"target_text": 42},
+            "Render Plan unit target is invalid",
+        ),
+        (
+            "render-plan-v1",
+            {"approved_boundary_kind": "fallback"},
+            "Render Plan boundary kind is invalid",
+        ),
+    ],
+)
+def test_render_plan_rejects_unsupported_or_unsafe_wire_payloads(
+    schema_version: str,
+    updates: dict[str, object],
+    error: str,
+) -> None:
+    from transpodcast.modal_pipeline import _render_units_by_segment
+
+    unit: dict[str, object] = {
+        "unit_id": "seg-0001",
+        "parent_segment_id": "seg-0001",
+        "source_segment_id": "seg-0001",
+        "source_start_seconds": 0.0,
+        "source_end_seconds": 4.0,
+        "pause_before_seconds": 0.0,
+        "pause_after_seconds": 0.0,
+        "target_text": "Target sentence.",
+        "internal_split": False,
+        "approved_boundary_kind": None,
+    }
+    unit.update(updates)
+
+    with pytest.raises(ValueError, match=error):
+        _render_units_by_segment(
+            {
+                "render_plan": {
+                    "schema_version": schema_version,
+                    "units": [unit],
+                }
+            },
+            [
+                {
+                    "segment_id": "seg-0001",
+                    "start_seconds": 0.0,
+                    "end_seconds": 4.0,
+                }
+            ],
+            ["Target sentence."],
+        )
+
+
+def test_assembly_inserts_explicit_pause_only_for_approved_internal_split(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from transpodcast import modal_pipeline
+
+    rendered = tmp_path / "rendered.wav"
+    rendered.write_bytes(b"speech")
+    monkeypatch.setattr(
+        modal_pipeline,
+        "_write_silence",
+        lambda path, _duration: path.write_bytes(b"silence"),
+    )
+
+    sequence = modal_pipeline._assembly_sequence(
+        tmp_path / "source.wav",
+        [
+            {
+                "source_start_seconds": 0.0,
+                "source_end_seconds": 4.0,
+                "pause_after_seconds": 0.4,
+                "internal_split": True,
+                "approved_boundary_kind": "pause",
+            }
+        ],
+        [rendered],
+        [],
+        tmp_path,
+    )
+
+    assert sequence == [rendered, tmp_path / "internal-pause-0001.wav"]
+
+
+def test_hidden_render_unit_timings_collapse_to_canonical_segments() -> None:
+    from transpodcast.modal_pipeline import _parent_segment_timings
+
+    render_plan = [
+        {"source_segment_id": "seg-0001"},
+        {"source_segment_id": "seg-0001"},
+        {"source_segment_id": "seg-0002"},
+    ]
+
+    timings = _parent_segment_timings(
+        render_plan,
+        [(0.0, 1.0), (1.4, 2.5), (2.5, 4.0)],
+        ["seg-0001", "seg-0002"],
+    )
+
+    assert timings == [(0.0, 2.5), (2.5, 4.0)]
+
+
+def test_segment_revision_merges_prior_speech_text_audit_by_render_unit() -> None:
+    from transpodcast.modal_pipeline import _speech_text_audit_units
+
+    units = _speech_text_audit_units(
+        [
+            {"segment_id": "unit-1"},
+            {"segment_id": "unit-2"},
+        ],
+        [
+            {
+                "segment_id": "unit-2",
+                "speech_text_sha256": "new-2",
+                "pronunciation_annotation_count": 4,
+                "chinese_replacement_count": 1,
+                "pronunciation_fallback_count": 2,
+            }
+        ],
+        {
+            "render_settings_json": (
+                '{"speech_text_units": ['
+                '{"render_unit_id": "unit-1", "sha256": "old-1", '
+                '"pronunciation_annotation_count": 2, '
+                '"chinese_replacement_count": 0, '
+                '"pronunciation_fallback_count": 1},'
+                '{"render_unit_id": "unit-2", "sha256": "old-2", '
+                '"pronunciation_annotation_count": 3, '
+                '"chinese_replacement_count": 0}]}'
+            )
+        },
+    )
+
+    assert units == [
+        {
+            "render_unit_id": "unit-1",
+            "sha256": "old-1",
+            "pronunciation_annotation_count": 2,
+            "chinese_replacement_count": 0,
+            "pronunciation_fallback_count": 1,
+        },
+        {
+            "render_unit_id": "unit-2",
+            "sha256": "new-2",
+            "pronunciation_annotation_count": 4,
+            "chinese_replacement_count": 1,
+            "pronunciation_fallback_count": 2,
+        },
+    ]
+
+
+def test_render_executes_hidden_units_and_returns_one_canonical_timing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from transpodcast import modal_pipeline
+
+    source = tmp_path / "source.m4a"
+    source.write_bytes(b"source")
+    reference = tmp_path / "speaker.wav"
+    reference.write_bytes(b"speaker")
+    prior_target = "Target sentence."
+    captured_plan = []
+
+    def fake_transcode(_source, destination, **_kwargs):
+        destination.write_bytes(b"wav")
+
+    def fake_render_sharded(
+        _source_wav,
+        _checksum,
+        _references,
+        plan,
+        rendered_root,
+        **_kwargs,
+    ):
+        assert _kwargs["pipeline_version"] == (
+            "transpodcast-modal-pipeline-v16"
+        )
+        assert _kwargs["renderer_class"] == "IndexTTS25BatchRenderer"
+        captured_plan.extend(plan)
+        metadata = []
+        for index, unit in enumerate(plan, start=1):
+            path = rendered_root / f"segment-{index:04d}.wav"
+            path.write_bytes(f"unit-{index}".encode())
+            metadata.append(
+                {
+                    "segment_id": unit["segment_id"],
+                    "path": str(path),
+                    "sha256": "fixture",
+                    "duration_seconds": 1.0,
+                    "emotion_reference_start_seconds": 0.0,
+                    "emotion_reference_end_seconds": 1.0,
+                    "speech_text_sha256": f"adapted-text-{index}",
+                }
+            )
+        return {
+            "segments": metadata,
+            "model_id": "fixture-indextts",
+            "model_revision": "fixture-revision",
+            "seed": 42,
+            "emotion_alpha": 0.8,
+            "random_sampling": False,
+            "total_inference_seconds": 2.0,
+        }
+
+    def fake_assemble(sequence, publication_path, **_kwargs):
+        assert len(sequence) == 3
+        publication_path.write_bytes(b"publication")
+        return {
+            "duration_seconds": 2.4,
+            "quality": {"rendered_segments": 2},
+        }
+
+    monkeypatch.setattr(modal_pipeline, "_transcode", fake_transcode)
+    monkeypatch.setattr(modal_pipeline, "_render_sharded", fake_render_sharded)
+    monkeypatch.setattr(
+        modal_pipeline,
+        "_write_silence",
+        lambda path, _duration: path.write_bytes(b"silence"),
+    )
+    monkeypatch.setattr(
+        modal_pipeline,
+        "_probe",
+        lambda path: {
+            "format": {
+                "duration": "0.4" if "pause" in path.name else "1.0"
+            }
+        },
+    )
+    monkeypatch.setattr(modal_pipeline, "assemble_publication", fake_assemble)
+
+    result = modal_pipeline.render(
+        {
+            "source": {
+                "audio_path": str(source),
+                "checksum": "fixture-source",
+                "analysis": {
+                    "pipeline_version": "transpodcast-modal-pipeline-v15",
+                    "segments": [
+                        {
+                            "segment_id": "seg-0001",
+                            "speaker_label": "speaker-01",
+                            "start_seconds": 0.0,
+                            "end_seconds": 2.4,
+                        }
+                    ],
+                    "speakers": [
+                        {
+                            "local_label": "speaker-01",
+                            "reference_artifact_key": str(reference),
+                        }
+                    ],
+                    "source_events": [],
+                    "render_plan": {
+                        "schema_version": "render-plan-v1",
+                        "units": [
+                            {
+                                "unit_id": "seg-0001--render-01",
+                                "parent_segment_id": "seg-0001",
+                                "source_segment_id": "seg-0001",
+                                "source_start_seconds": 0.0,
+                                "source_end_seconds": 1.0,
+                                "pause_before_seconds": 0.0,
+                                "pause_after_seconds": 0.4,
+                                "target_text": "Target ",
+                                "internal_split": True,
+                                "approved_boundary_kind": "pause",
+                            },
+                            {
+                                "unit_id": "seg-0001--render-02",
+                                "parent_segment_id": "seg-0001",
+                                "source_segment_id": "seg-0001",
+                                "source_start_seconds": 1.4,
+                                "source_end_seconds": 2.4,
+                                "pause_before_seconds": 0.4,
+                                "pause_after_seconds": 0.0,
+                                "target_text": "sentence.",
+                                "internal_split": True,
+                                "approved_boundary_kind": None,
+                            },
+                        ],
+                    },
+                },
+            },
+            "translation": {"segments": [prior_target]},
+            "rendering": {
+                "renderer": "indextts25",
+                "pipeline_version": "transpodcast-modal-pipeline-v16",
+            },
+        },
+        tmp_path / "output",
+    )
+
+    assert [unit["target_text"] for unit in captured_plan] == [
+        "Target ",
+        "sentence.",
+    ]
+    assert result["quality"]["rendered_segments"] == 2
+    assert result["segment_timings"] == [
+        {"start_seconds": 0.0, "end_seconds": 2.4}
+    ]
+    assert result["render_settings"]["speech_text_hashes"] == [
+        {
+            "render_unit_id": "seg-0001--render-01",
+            "sha256": "adapted-text-1",
+        },
+        {
+            "render_unit_id": "seg-0001--render-02",
+            "sha256": "adapted-text-2",
+        },
+    ]

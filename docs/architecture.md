@@ -12,7 +12,7 @@ flowchart TB
         Worker["Processing worker"]
         DB[("SQLite state")]
         Local[("Local artifacts")]
-        Agent["Translation agent adapter"]
+        Agent["Agent adapter (Codex or Claude Code)"]
         Console --> API
         API --> DB
         Worker --> DB

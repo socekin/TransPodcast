@@ -40,8 +40,24 @@ other podcast clients.
   long-form podcasts instead of producing only summaries or text.
 - **👥 Multi-speaker voice preservation:** Identify individual speakers and
   preserve their voice characteristics and delivery in the Mandarin edition.
+- **🧭 Accurate speaker ownership:** Correct word-level speaker attribution with
+  deterministic rules and dense voiceprints, merge stray diarization labels,
+  relabel whole misattributed spans, and let an agent review risky handoffs.
+- **⏱️ Rhythm and pause restoration:** Assemble the Mandarin voices with the
+  source's pauses and turn-taking rhythm, and cap long silences inside a
+  sentence so conversations sound natural.
 - **✍️ Translation and review:** Translate with full-episode context and run an
-  independent review for terminology, numbers, meaning, and spoken style.
+  independent review for terminology, numbers, meaning, and spoken style. The
+  listening-oriented translation policy writes numbers as they are spoken and
+  keeps names consistent through a project glossary.
+- **🔁 Listening audit and automatic re-render:** After rendering, every unit is
+  checked for truncation, insertions, English leakage, speech rate, long
+  pauses, and voice drift. Severe findings are re-rendered once automatically;
+  anything that remains needs an explicit confirmation.
+- **🤖 Selectable processing agent:** Use Codex CLI by default or switch to
+  Claude Code in Settings. Each Processing Run keeps the agent it started with.
+- **🎙️ Selectable voice model:** Choose IndexTTS 2.0 or IndexTTS 2.5. Each
+  Processing Run keeps the model it started with.
 - **✂️ Ad and opening-highlight removal:** Exclude clearly separable third-party
   paid advertisements and assembled opening highlights from the final Mandarin
   audio. Uncertain material is retained to avoid removing editorial content.
@@ -88,7 +104,8 @@ transcripts, and translations.
 | --- | --- | --- |
 | Local host | An always-on macOS device | Runs TransPodcast, stores local data, and serves the management interface |
 | Local toolchain | Xcode Command Line Tools (providing Git and make), Python 3.12–3.14, [uv](https://docs.astral.sh/uv/), Node.js 22+, npm, and FFmpeg | Installs, builds, and runs the project |
-| Codex CLI (required) | An installed and authenticated [Codex CLI](https://developers.openai.com/codex/cli) | Performs episode selection, translation, review, and episode copy generation |
+| Agent CLI (at least one) | An installed and authenticated [Codex CLI](https://developers.openai.com/codex/cli) (default) or the optional [Claude Code](https://code.claude.com/docs/en/setup) | Performs episode selection, translation, review, speaker-ownership review, and episode copy generation |
+| Browser | Google Chrome or another Chromium-based browser | Generates YouTube proof-of-origin tokens locally when downloading source audio |
 | GPU speech service | A Modal account | Runs speech recognition, speaker analysis, and Mandarin speech synthesis |
 | Private podcast delivery | A Cloudflare account, R2 bucket, Worker, and stable HTTPS domain | Hosts the protected RSS feed and full episode audio |
 | Podcast client | Apple Podcasts or another client that supports adding a feed by URL | Follows the private Mandarin podcast |
@@ -133,12 +150,12 @@ TransPodcast Host is available at <http://transpodcast.localhost:8000> by
 default.
 
 These commands install dependencies, validate the repository, and start the
-local services. The background service checks whether configured Codex, Modal,
-Cloudflare, Telegram, and YouTube capabilities are ready, so startup may make
-provider API requests. The default manual-processing mode does not import an
-episode, start a Processing Run, or execute a GPU speech stage automatically.
-Real episode processing requires the remaining service configuration in
-[Getting Started](docs/getting-started.md).
+local services. The background service checks whether the configured agent
+(Codex or Claude Code), Modal, Cloudflare, Telegram, and YouTube capabilities
+are ready, so startup may make provider API requests. The default
+manual-processing mode does not import an episode, start a Processing Run, or
+execute a GPU speech stage automatically. Real episode processing requires the
+remaining service configuration in [Getting Started](docs/getting-started.md).
 
 ## Processing and Publication
 
@@ -169,6 +186,13 @@ flowchart TB
     Quality --> Queue["8. Ready to publish"]
 ```
 
+Speaker analysis and transcription covers diarization, speech recognition,
+word alignment, deterministic speaker ownership with agent review, and natural
+segmentation at sentences and pauses. Voice rendering and assembly restores the
+source rhythm and runs the listening audit, with automatic re-rendering where
+needed. Mastering and audio QA measures loudness, peak, codec, sample rate,
+channels, and bitrate directly from the finished file.
+
 These stages match the run log in TransPodcast Host. The run log preserves
 stage status and attempt history, and processing can resume from the latest
 valid checkpoint. An episode enters the publication queue after mastering and
@@ -193,7 +217,11 @@ TransPodcast software license.
 | [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) | Transcribes English speech |
 | [Qwen3 ForcedAligner](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B) | Aligns transcript text to precise audio times |
 | [NVIDIA TitaNet](https://huggingface.co/nvidia/speakerverification_en_titanet_large) | Extracts voice characteristics for speaker matching |
-| [IndexTTS2](https://github.com/index-tts/index-tts) | Renders Mandarin speech with target voice and delivery characteristics |
+| [IndexTTS2](https://github.com/index-tts/index-tts) | Renders Mandarin speech with target voice and delivery characteristics (default) |
+| [IndexTTS 2.5](https://huggingface.co/IndexTeam/IndexTTS-2.5) | Optional Mandarin speech renderer, selected in Settings |
+
+Qwen3-ASR and TitaNet also power the listening audit's Mandarin
+back-transcription and voice-consistency checks.
 
 Read [Third-party Model Terms](docs/model-licenses.md) before deployment and
 verify the license, attribution, and use restrictions for each deployed model

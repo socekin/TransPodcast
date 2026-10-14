@@ -8,7 +8,11 @@ from fastapi.testclient import TestClient
 
 from transpodcast.api import create_app
 from transpodcast.domain import SourceCandidate, TranslationResult
-from transpodcast.models import ProcessingRunActivityRecord, ProcessingRunRecord
+from transpodcast.models import (
+    ProcessingRunActivityRecord,
+    ProcessingRunRecord,
+    ProcessingStageRecord,
+)
 from transpodcast.service import (
     _latest_recorded_at,
     _owner_current_step,
@@ -49,6 +53,75 @@ def test_pipeline_steps_use_the_owner_facing_state_contract() -> None:
         item["id"]: item["state"]
         for item in _pipeline_steps(waiting, [], None)
     }["voice_render"] == "waiting_to_retry"
+
+
+def test_v15_source_analysis_exposes_ownership_and_segmentation_flow() -> None:
+    observed_at = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
+    run = ProcessingRunRecord(
+        stage="translation",
+        status="processing",
+        analysis_json=json.dumps(
+            {
+                "pipeline_version": "transpodcast-modal-pipeline-v15",
+                "segments": [
+                    {"speaker_label": "speaker-01"},
+                    {"speaker_label": "speaker-02"},
+                ],
+                "speakers": [{}, {}],
+                "boundary_adjudication": {
+                    "speaker_ownership_v15": {
+                        "region_count": 69,
+                        "changed_word_count": 12,
+                        "disputed_region_count": 3,
+                        "degraded_errors": ["batch-2: provider unavailable"],
+                        "natural_segmentation": {
+                            "segment_count": 359,
+                            "fallback_boundary_count": 1,
+                        },
+                    }
+                },
+            }
+        ),
+    )
+    source_analysis = ProcessingStageRecord(
+        processing_run_id=1,
+        stage="source_analysis",
+        version="transpodcast-modal-pipeline-v15",
+        provider="modal",
+        model="fixture-models",
+        input_hash="input",
+        output_hash="output",
+        usage_json="{}",
+        duration_ms=1_000,
+        started_at=observed_at,
+        completed_at=observed_at,
+    )
+
+    step = next(
+        item
+        for item in _pipeline_steps(
+            run,
+            [source_analysis],
+            None,
+            observed_at=observed_at,
+        )
+        if item["id"] == "source_analysis"
+    )
+
+    assert step["metrics"] == {
+        "segments": 2,
+        "speakers": 2,
+        "raw_speaker_candidates": 2,
+        "transfer_bytes": None,
+        "call_seconds": None,
+        "estimated_cost_usd": None,
+        "ownership_region_count": 69,
+        "ownership_changed_word_count": 12,
+        "ownership_disputed_region_count": 3,
+        "natural_segment_count": 359,
+        "fallback_boundary_count": 1,
+        "ownership_degraded": True,
+    }
 
 
 def test_completed_legacy_run_marks_content_editing_not_applicable() -> None:

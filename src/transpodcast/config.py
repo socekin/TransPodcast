@@ -30,7 +30,15 @@ class TransPodcastSettings(BaseSettings):
 
     codex_executable: str = "codex"
     codex_model: str = ""
+    # Claude Code is selectable through the ``agent_provider`` setting. An
+    # empty model uses the CLI default under TransPodcast's isolation flags.
+    claude_executable: str = "claude"
+    claude_model: str = ""
+    claude_effort: str = ""
     youtube_proxy_url: str = ""
+    youtube_browser_executable: Path = Path(
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
     modal_command: str = "uv run transpodcast-modal-pipeline"
     modal_environment: str = "transpodcast"
     modal_l40s_usd_per_hour: float = Field(default=1.95, gt=0)

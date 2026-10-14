@@ -18,7 +18,12 @@ from transpodcast.domain import (
     SpeechResult,
     TranslationResult,
 )
-from transpodcast.models import ProcessingRunRecord, StructuredArtifactRecord
+from transpodcast.models import (
+    ProcessingRunRecord,
+    SegmentRevisionJobRecord,
+    StructuredArtifactRecord,
+)
+from transpodcast.service import _v15_counterpart_label
 from transpodcast.testing import (
     AcceptanceHarness,
     FakeSpeechAdapter,
@@ -158,6 +163,173 @@ class ThreeSegmentTranslationAdapter(FakeTranslationAdapter):
                 "而且",
                 "现在整个行业都有这种感觉。",
             ),
+        )
+
+
+class V15OwnershipDetailAdapter(DisputedAnalysisAdapter):
+    def analyze(
+        self,
+        candidate: SourceCandidate,
+        archive: SourceArchive,
+    ) -> SourceAnalysisResult:
+        base = super().analyze(candidate, archive)
+        record = {
+            "kind": "speaker-ownership-adjudication",
+            "policy_version": "speaker-ownership-adjudication-v1",
+            "subject": {
+                "region_id": "speaker-ownership::0001::1-1",
+                "first_word_index": 1,
+                "last_word_index": 1,
+                "start_seconds": 10.0,
+                "end_seconds": 10.5,
+                "permissible_speakers": [
+                    "speaker-01",
+                    "speaker-02",
+                    "speaker-03",
+                ],
+            },
+            "evidence": {
+                "immutable_words": [
+                    {
+                        "word_index": 1,
+                        "text": "and",
+                        "start_seconds": 10.0,
+                        "end_seconds": 10.5,
+                        "current_owner": "speaker-01",
+                    }
+                ],
+                "voiceprint_evidence": [],
+                "planner_plan": {
+                    "action": "assign_spans",
+                    "assignments": [
+                        {
+                            "first_word_index": 1,
+                            "last_word_index": 1,
+                            "speaker_label": "speaker-02",
+                        }
+                    ],
+                    "missing_speech_suspected": False,
+                    "rationale": "The conjunction begins the response.",
+                },
+                "reviewer_plan": {
+                    "action": "keep",
+                    "assignments": [],
+                    "missing_speech_suspected": False,
+                    "rationale": "The acoustic boundary is ambiguous.",
+                },
+                "applied_plan": {
+                    "action": "assign_spans",
+                    "assignments": [
+                        {
+                            "first_word_index": 1,
+                            "last_word_index": 1,
+                            "speaker_label": "speaker-02",
+                        }
+                    ],
+                    "missing_speech_suspected": False,
+                    "rationale": "The conjunction begins the response.",
+                },
+                "applied_plan_source": "planner",
+                "acoustic_conflict": True,
+            },
+            "verdict": "applied-disputed",
+            "rationale": "The conjunction begins the response.",
+        }
+        consolidation = json.loads(base.speaker_consolidation_json)
+        consolidation["speaker_mapping"]["speaker-03"] = "speaker-03"
+        return replace(
+            base,
+            pipeline_version="transpodcast-modal-pipeline-v15",
+            speakers=(
+                *base.speakers,
+                AnalyzedSpeaker(
+                    local_label="speaker-03",
+                    reference_audio=b"RIFFspeaker-03",
+                    embedding=(0.0, 0.0, 1.0),
+                    confidence=0.98,
+                ),
+            ),
+            speaker_consolidation_json=json.dumps(consolidation),
+            boundary_adjudication_json=json.dumps(
+                {
+                    "policy_version": "speaker-ownership-adjudication-v1",
+                    "changed_count": 1,
+                    "marked_count": 1,
+                    "decision_records": [record],
+                    "speaker_ownership_v15": {
+                        "policy_version": "speaker-ownership-adjudication-v1",
+                        "region_count": 1,
+                        "changed_word_count": 1,
+                        "disputed_region_count": 1,
+                        "possible_missing_speech_count": 0,
+                        "batch_count": 1,
+                        "natural_segmentation": {},
+                        "decision_records": [record],
+                    },
+                }
+            ),
+        )
+
+
+class V15PartialPrefixDetailAdapter(V15OwnershipDetailAdapter):
+    def analyze(
+        self,
+        candidate: SourceCandidate,
+        archive: SourceArchive,
+    ) -> SourceAnalysisResult:
+        base = super().analyze(candidate, archive)
+        adjudication = json.loads(base.boundary_adjudication_json)
+        record = adjudication["decision_records"][0]
+        record["subject"].update(
+            {
+                "first_word_index": 1,
+                "last_word_index": 2,
+                "start_seconds": 10.0,
+                "end_seconds": 11.0,
+            }
+        )
+        record["evidence"]["immutable_words"] = [
+            {
+                "word_index": 1,
+                "text": "and",
+                "start_seconds": 10.0,
+                "end_seconds": 10.5,
+                "current_owner": "speaker-01",
+            },
+            {
+                "word_index": 2,
+                "text": "continues",
+                "start_seconds": 10.5,
+                "end_seconds": 11.0,
+                "current_owner": "speaker-02",
+            },
+        ]
+        assignments = [
+            {
+                "first_word_index": 1,
+                "last_word_index": 2,
+                "speaker_label": "speaker-02",
+            }
+        ]
+        record["evidence"]["planner_plan"]["assignments"] = assignments
+        record["evidence"]["applied_plan"]["assignments"] = assignments
+        adjudication["speaker_ownership_v15"]["decision_records"] = [record]
+        return replace(
+            base,
+            segments=(
+                base.segments[0],
+                replace(
+                    base.segments[1],
+                    end_seconds=11.0,
+                    text="and continues",
+                    words=(
+                        ("and", 10.0, 10.5),
+                        ("continues", 10.5, 11.0),
+                    ),
+                ),
+                replace(base.segments[2], start_seconds=11.0),
+            ),
+            boundary_adjudication_json=json.dumps(adjudication),
         )
 
 
@@ -516,6 +688,109 @@ def test_processing_detail_exposes_v14_boundary_decisions(
     assert current["adjudication"]["verdict"] == "split-to-next-applied"
     assert next_turn["adjudication"]["verdict"] == "split-to-next-applied"
     assert next_turn["counterpart_speaker"]["label"] == "speaker-01"
+
+
+def test_processing_detail_exposes_v15_plans_and_exact_original_owner(
+    tmp_path,
+) -> None:
+    client, _, episode_id = _completed_episode(
+        tmp_path,
+        analysis=V15OwnershipDetailAdapter(),
+    )
+
+    detail = client.get(f"/api/v1/episodes/{episode_id}/processing-detail").json()
+
+    disputed = detail["segments"][1]
+    assert disputed["status"] == "disputed"
+    assert disputed["adjudication"]["kind"] == (
+        "speaker-ownership-adjudication"
+    )
+    assert disputed["adjudication"]["evidence"]["planner_plan"][
+        "rationale"
+    ] == "The conjunction begins the response."
+    assert disputed["adjudication"]["evidence"]["reviewer_plan"][
+        "rationale"
+    ] == "The acoustic boundary is ambiguous."
+    assert disputed["counterpart_speaker"]["label"] == "speaker-01"
+    assert detail["summary"]["speaker_ownership_v15"][
+        "disputed_region_count"
+    ] == 1
+
+
+def test_v15_partial_prefix_change_has_no_unsafe_segment_overturn() -> None:
+    evidence = {
+        "immutable_words": [
+            {
+                "word_index": 10,
+                "start_seconds": 4.0,
+                "end_seconds": 4.2,
+                "current_owner": "speaker-01",
+            },
+            {
+                "word_index": 11,
+                "start_seconds": 4.2,
+                "end_seconds": 4.8,
+                "current_owner": "speaker-02",
+            },
+        ],
+        "applied_plan": {
+            "assignments": [
+                {
+                    "first_word_index": 10,
+                    "last_word_index": 11,
+                    "speaker_label": "speaker-02",
+                }
+            ]
+        },
+    }
+
+    assert (
+        _v15_counterpart_label(
+            evidence,
+            segment_start_seconds=4.0,
+            segment_end_seconds=4.8,
+            current_speaker_label="speaker-02",
+        )
+        == ""
+    )
+
+
+def test_v15_partial_prefix_overturn_is_rejected_at_the_api_boundary(
+    tmp_path,
+) -> None:
+    client, harness, episode_id = _completed_episode(
+        tmp_path,
+        analysis=V15PartialPrefixDetailAdapter(),
+    )
+    detail = client.get(f"/api/v1/episodes/{episode_id}/processing-detail").json()
+    speaker_id = detail["speakers"][0]["id"]
+
+    response = client.post(
+        f"/api/v1/episodes/{episode_id}/segments/2:rule",
+        json={"action": "overturn", "speaker_id": speaker_id},
+    )
+
+    assert response.status_code == 409
+    assert "cannot be safely overturned" in response.json()["detail"]
+    with harness.dependencies.database.session() as session:
+        assert session.scalars(select(SegmentRevisionJobRecord)).all() == []
+
+
+def test_v15_exact_segment_overturn_remains_available(tmp_path) -> None:
+    client, _, episode_id = _completed_episode(
+        tmp_path,
+        analysis=V15OwnershipDetailAdapter(),
+    )
+    detail = client.get(f"/api/v1/episodes/{episode_id}/processing-detail").json()
+    speaker_id = detail["segments"][1]["counterpart_speaker"]["id"]
+
+    response = client.post(
+        f"/api/v1/episodes/{episode_id}/segments/2:rule",
+        json={"action": "overturn", "speaker_id": speaker_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["revision_job_id"] is not None
 
 
 def test_processing_detail_marks_only_the_v14_whole_reassignment_target(

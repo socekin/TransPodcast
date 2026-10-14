@@ -3,10 +3,12 @@
 /* tslint:disable */
 /* eslint-disable */
 export type SettingsUpdate = {
+  agent_provider?: ('codex' | 'claude' | null);
   auto_discovery?: (boolean | null);
   discovery_interval_minutes?: (number | null);
   duration_guardrail_minutes?: (number | null);
   manual_processing?: (boolean | null);
   notification_preferences?: (Record<string, boolean> | null);
   processing_target_hours?: (number | null);
+  speech_model?: ('indextts2' | 'indextts25' | null);
 };

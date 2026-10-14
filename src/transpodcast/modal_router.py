@@ -425,7 +425,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--operation",
-        choices=("analyze", "render", "remaster", "readiness"),
+        choices=("analyze", "ownership-evidence", "render", "remaster", "readiness"),
     )
     parser.add_argument("--request", type=Path)
     parser.add_argument("--output", type=Path)

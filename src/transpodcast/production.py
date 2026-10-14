@@ -4,10 +4,11 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from transpodcast.adapters.claude import ClaudeRunner
 from transpodcast.adapters.codex import (
+    AgentTranslationAdapter,
+    AgentTriageAdapter,
     CodexRunner,
-    CodexTranslationAdapter,
-    CodexTriageAdapter,
 )
 from transpodcast.adapters.r2 import R2PublicationStorage
 from transpodcast.adapters.speech import (
@@ -38,6 +39,12 @@ def build_dependencies(
         executable=resolved.codex_executable,
         model=resolved.codex_model,
     )
+    claude = ClaudeRunner(
+        executable=resolved.claude_executable,
+        model=resolved.claude_model,
+        effort=resolved.claude_effort,
+    )
+    project_root = resolved.artifact_root / "translation-projects"
     storage = (
         R2PublicationStorage(
             endpoint_url=resolved.r2_endpoint_url,
@@ -55,14 +62,26 @@ def build_dependencies(
                 Path(sys.executable).with_name("yt-dlp")
             ),
             proxy_url=resolved.youtube_proxy_url,
+            browser_executable=resolved.youtube_browser_executable,
         ),
-        triage=CodexTriageAdapter(codex),
-        translation=CodexTranslationAdapter(
+        triage=AgentTriageAdapter(codex),
+        translation=AgentTranslationAdapter(
             codex,
-            project_root=resolved.artifact_root / "translation-projects",
+            project_root=project_root,
             progress_reporter=activity_repository.record_translation_phase,
         ),
-        speech=ModalCommandSpeechAdapter(resolved.modal_command),
+        agent_triage={"claude": AgentTriageAdapter(claude)},
+        agent_translations={
+            "claude": AgentTranslationAdapter(
+                claude,
+                project_root=project_root,
+                progress_reporter=activity_repository.record_translation_phase,
+            ),
+        },
+        speech=ModalCommandSpeechAdapter(
+            resolved.modal_command,
+            artifact_root=resolved.artifact_root,
+        ),
         storage=storage,
         notifications=TelegramBotAdapter(
             resolved.telegram_bot_token,

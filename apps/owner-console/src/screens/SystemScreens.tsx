@@ -1,7 +1,10 @@
 import { Checkbox } from "@base-ui/react/checkbox";
+import { Select } from "@base-ui/react/select";
 import {
+  AudioLines,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Clock3,
   Copy,
@@ -23,7 +26,12 @@ import {
   ServiceStatus
 } from "../components/ui";
 import { copy } from "../i18n/zh-CN";
-import { api, type ApiSettings } from "../lib/api";
+import {
+  api,
+  type AgentProvider,
+  type ApiSettings,
+  type Readiness
+} from "../lib/api";
 import { useApiResource } from "../lib/useApiResource";
 import { PageHeading } from "./LibraryScreens";
 
@@ -328,12 +336,99 @@ export function Runs() {
   );
 }
 
+type SettingOption<Value extends string> = {
+  label: string;
+  value: Value;
+};
+
+const speechModelOptions: ReadonlyArray<
+  SettingOption<ApiSettings["speech"]["model"]>
+> = [
+  { label: copy.settings.indexTts2, value: "indextts2" },
+  { label: copy.settings.indexTts25, value: "indextts25" }
+];
+
+const agentProviderOptions: ReadonlyArray<SettingOption<AgentProvider>> = [
+  { label: copy.settings.agentCodex, value: "codex" },
+  { label: copy.settings.agentClaude, value: "claude" }
+];
+
+function SettingSelect<Value extends string>({
+  label,
+  value,
+  options,
+  onChange
+}: {
+  label: string;
+  value: Value;
+  options: ReadonlyArray<SettingOption<Value>>;
+  onChange: (value: Value) => void;
+}) {
+  return (
+    <Select.Root
+      items={options.map((option) => ({ ...option }))}
+      value={value}
+      onValueChange={(next) =>
+        next !== null ? onChange(next as Value) : undefined
+      }
+    >
+      <Select.Trigger aria-label={label} className="setting-select-trigger">
+        <Select.Value />
+        <Select.Icon>
+          <ChevronDown size={14} aria-hidden="true" />
+        </Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Positioner
+          className="setting-select-positioner"
+          sideOffset={4}
+        >
+          <Select.Popup className="setting-select-popup">
+            <Select.List>
+              {options.map((option) => (
+                <Select.Item
+                  key={option.value}
+                  className="setting-select-item"
+                  value={option.value}
+                >
+                  <Select.ItemIndicator>
+                    <Check size={12} aria-hidden="true" />
+                  </Select.ItemIndicator>
+                  <Select.ItemText>{option.label}</Select.ItemText>
+                </Select.Item>
+              ))}
+            </Select.List>
+          </Select.Popup>
+        </Select.Positioner>
+      </Select.Portal>
+    </Select.Root>
+  );
+}
+
+function agentProviderLabel(provider: AgentProvider | undefined) {
+  return provider === "claude"
+    ? copy.settings.agentClaude
+    : copy.settings.agentCodex;
+}
+
+function agentCliStatusNote(agent: Readiness["agent"]) {
+  const label = (provider: AgentProvider) =>
+    agent?.providers[provider]?.ready
+      ? copy.settings.ready
+      : copy.settings.missing;
+  return copy.settings.agentCliStatus(label("codex"), label("claude"));
+}
+
 export function SettingsScreen() {
   const [notice, setNotice] = useState<{
     message: string;
     tone: "success" | "error";
   } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [speechModel, setSpeechModel] = useState<
+    ApiSettings["speech"]["model"]
+  >("indextts2");
+  const [agentProvider, setAgentProvider] = useState<AgentProvider>("codex");
   const loadReadiness = useCallback(
     (signal: AbortSignal) => api.readiness(signal),
     []
@@ -359,6 +454,16 @@ export function SettingsScreen() {
       }));
     }
   }, [settings.data?.automation]);
+  useEffect(() => {
+    if (settings.data?.speech?.model) {
+      setSpeechModel(settings.data.speech.model);
+    }
+  }, [settings.data?.speech?.model]);
+  useEffect(() => {
+    if (settings.data?.agent?.provider) {
+      setAgentProvider(settings.data.agent.provider);
+    }
+  }, [settings.data?.agent?.provider]);
   const automationFields: Array<{
     key: "discovery_interval_minutes"
       | "duration_guardrail_minutes"
@@ -461,6 +566,76 @@ export function SettingsScreen() {
             {notice.message}
           </p>
         ) : null}
+
+        <Card className="settings-panel settings-speech-card">
+          <header className="settings-card-header">
+            <span className="settings-card-icon">
+              <AudioLines size={17} aria-hidden="true" />
+            </span>
+            <div className="settings-card-heading">
+              <h2>{copy.settings.speechTitle}</h2>
+              <p>{copy.settings.speechBody}</p>
+            </div>
+          </header>
+          <div className="settings-field-list">
+            <div className="setting-input-row">
+              <span>
+                <strong>{copy.settings.speechModel}</strong>
+                <small>{copy.settings.speechModelNote}</small>
+              </span>
+              <SettingSelect
+                label={copy.settings.speechModel}
+                value={speechModel}
+                options={speechModelOptions}
+                onChange={setSpeechModel}
+              />
+            </div>
+            <div className="setting-input-row">
+              <span>
+                <strong>{copy.settings.agentProvider}</strong>
+                <small>{copy.settings.agentProviderNote}</small>
+              </span>
+              <SettingSelect
+                label={copy.settings.agentProvider}
+                value={agentProvider}
+                options={agentProviderOptions}
+                onChange={setAgentProvider}
+              />
+            </div>
+          </div>
+          <footer className="settings-card-footer">
+            <small>{copy.settings.speechSaveNote}</small>
+            <Button
+              disabled={saving}
+              onClick={() => {
+                setSaving(true);
+                setNotice(null);
+                api
+                  .updateSettings({
+                    speech_model: speechModel,
+                    agent_provider: agentProvider
+                  })
+                  .then((updated) => {
+                    setSpeechModel(updated.speech.model);
+                    if (updated.agent?.provider) {
+                      setAgentProvider(updated.agent.provider);
+                    }
+                    setNotice({
+                      message: copy.settings.speechSaved,
+                      tone: "success"
+                    });
+                    settings.reload();
+                    readiness.reload();
+                  })
+                  .catch(showError)
+                  .finally(() => setSaving(false));
+              }}
+            >
+              <Save size={14} aria-hidden="true" />
+              {saving ? copy.settings.saving : copy.settings.saveSpeech}
+            </Button>
+          </footer>
+        </Card>
 
         <Card className="settings-panel settings-automation-card">
           <header className="settings-card-header">
@@ -637,12 +812,11 @@ export function SettingsScreen() {
           {readiness.data ? (
             <div className="service-list">
               <ServiceStatus
-                title={copy.settings.codex}
-                note={
-                  readiness.data.details.codex?.impact ||
-                  copy.settings.codexNote
-                }
-                configured={readiness.data.services.codex ?? false}
+                title={copy.settings.agentSelected(
+                  agentProviderLabel(readiness.data.agent?.provider)
+                )}
+                note={agentCliStatusNote(readiness.data.agent)}
+                configured={readiness.data.services.agent ?? false}
                 readyLabel={copy.settings.ready}
                 missingLabel={copy.settings.missing}
               />
@@ -656,6 +830,22 @@ export function SettingsScreen() {
                 readyLabel={copy.settings.ready}
                 missingLabel={copy.settings.missing}
               />
+              {readiness.data.services.listening_audit !== undefined ? (
+                <ServiceStatus
+                  title={copy.settings.listeningAudit}
+                  note={
+                    readiness.data.details.listening_audit?.impact ||
+                    copy.settings.listeningAuditNote
+                  }
+                  configured={readiness.data.services.listening_audit}
+                  optional={
+                    readiness.data.details.listening_audit?.optional ?? true
+                  }
+                  readyLabel={copy.settings.ready}
+                  missingLabel={copy.settings.missing}
+                  optionalMissingLabel={copy.settings.optionalMissing}
+                />
+              ) : null}
               <ServiceStatus
                 title={copy.settings.cloudflare}
                 note={

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
-from transpodcast.content_editing import build_render_plan
+from transpodcast.content_editing import (
+    MAXIMUM_RENDER_UNIT_CHARACTERS,
+    build_render_plan,
+)
 from transpodcast.domain import (
     CanonicalSegment,
     SourceAnalysisResult,
     TranslationResult,
 )
+from transpodcast.service import _render_plan_input_hash
 
 
 def _segment(
@@ -276,6 +281,12 @@ def test_zero_duration_start_anchor_does_not_create_empty_prefix() -> None:
     ]
     assert [item.text for item in plan.analysis.segments] == ["Editorial"]
     assert plan.translation.segments == ("Retained editorial target.",)
+    assert plan.units[0].unit_id == "seg-0001-retained-after"
+    assert plan.units[0].parent_segment_id == "seg-0001"
+    assert plan.units[0].internal_split is False
+    assert json.loads(plan.analysis.render_plan_json)["units"][0][
+        "parent_segment_id"
+    ] == "seg-0001"
 
 
 def test_zero_duration_end_anchor_does_not_create_empty_suffix() -> None:
@@ -302,6 +313,82 @@ def test_zero_duration_end_anchor_does_not_create_empty_suffix() -> None:
     ]
     assert [item.text for item in plan.analysis.segments] == ["Editorial"]
     assert plan.translation.segments == ("Retained editorial target.",)
+    assert plan.units[0].unit_id == "seg-0001-retained-before"
+    assert plan.units[0].parent_segment_id == "seg-0001"
+
+
+def test_render_plan_units_record_source_pauses_without_new_targets() -> None:
+    first = _segment("seg-0001", 0.0, ("first", "answer"))
+    second = _segment("seg-0002", 2.8, ("second", "answer"))
+    translation = _translation(2, [])
+
+    plan = build_render_plan(_analysis(first, second), translation)
+
+    assert len(plan.units) == len(plan.translation.segments) == 2
+    assert plan.units[0].pause_after_seconds == 1.0
+    assert plan.units[1].pause_before_seconds == 1.0
+    assert [unit.parent_segment_id for unit in plan.units] == [
+        "seg-0001",
+        "seg-0002",
+    ]
+
+
+def test_long_target_uses_hidden_units_at_an_approved_source_boundary() -> None:
+    segment = CanonicalSegment(
+        segment_id="seg-0001",
+        speaker_label="speaker-01",
+        start_seconds=0.0,
+        end_seconds=2.8,
+        text="First thought. Second thought.",
+        words=(
+            ("First", 0.0, 0.5),
+            ("thought", 0.5, 1.0),
+            ("Second", 1.4, 2.0),
+            ("thought", 2.0, 2.8),
+        ),
+    )
+    target = (
+        "A" * (MAXIMUM_RENDER_UNIT_CHARACTERS - 20)
+        + "!"
+        + "B" * (MAXIMUM_RENDER_UNIT_CHARACTERS - 20)
+        + "!"
+    )
+    translation = replace(
+        _translation(1, []),
+        segments=(target,),
+    )
+
+    analysis = replace(
+        _analysis(segment),
+        pipeline_version="transpodcast-modal-pipeline-v15",
+    )
+    plan = build_render_plan(analysis, translation)
+
+    assert plan.translation.segments == (target,)
+    assert len(plan.analysis.segments) == 1
+    assert len(plan.units) == 2
+    assert "".join(unit.target_text for unit in plan.units) == target
+    assert {unit.parent_segment_id for unit in plan.units} == {"seg-0001"}
+    assert {unit.source_segment_id for unit in plan.units} == {"seg-0001"}
+    assert all(unit.internal_split for unit in plan.units)
+    assert plan.units[0].approved_boundary_kind == "sentence"
+    assert plan.units[0].pause_after_seconds == 0.4
+    assert plan.units[1].pause_before_seconds == 0.4
+    assert len(json.loads(plan.analysis.render_plan_json)["units"]) == 2
+
+
+def test_render_input_hash_includes_lineage_and_pause_metadata() -> None:
+    segment = _segment("seg-0001", 0.0, ("first", "answer"))
+    translation = _translation(1, [])
+    plan = build_render_plan(_analysis(segment), translation)
+    changed = replace(
+        plan,
+        units=(replace(plan.units[0], pause_after_seconds=0.5),),
+    )
+
+    assert _render_plan_input_hash(translation, plan) != (
+        _render_plan_input_hash(translation, changed)
+    )
 
 
 def test_every_occurrence_of_a_duplicate_decision_id_fails_open() -> None:

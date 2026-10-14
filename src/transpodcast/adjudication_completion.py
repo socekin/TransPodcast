@@ -1,122 +1,71 @@
-"""Completes Boundary Ownership Adjudication at the worker layer.
+"""Completes Speaker ownership adjudication at the worker layer.
 
 Source Analysis is purely acoustic: it emits the detected ownership
 disputes and their fragment-voiceprint measurements as a pending
-payload. This module asks the discourse judge one batched question
-through the Translation Adapter, runs the fixed verdict engine, applies
-reassignments to the final Canonical Transcript segments, and rewrites
-the attribution ledger so it always describes what the Owner will hear.
+payload. For word-ownership analyses this module asks the Planner and
+Reviewer ownership questions through the Translation Adapter, applies the
+validated plans before natural segmentation, and rewrites the attribution
+ledger so it always describes what the Owner will hear. V17 continuity
+analyses are completed by the released ownership policy.
 
-A discourse failure can only produce abstentions: ownership is kept and
-the segment is marked disputed. It never fails the analysis stage — the
-GPU work must not be re-billed because a text question failed.
+A provider failure only degrades the affected batch: ownership is kept and
+the failure is recorded. It never fails the analysis stage, so the GPU work
+is not re-billed because a text question failed. The exceptions are a V17
+Agent rate limit or lost login, which say nothing about the batch: they stop
+the stage for the Retry Policy or the Owner, and the acoustic checkpoint and
+completed batches are reused on resume.
+
+Historical V9-V14 analyses are immutable stored data. No new Processing Run
+can reach their worker paths, so completion leaves every other analysis
+unchanged; Processing Detail and the Evaluation Report still render their
+stored Decision Records.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from transpodcast.adjudication_judges import (
-    MappedDiscourseJudge,
-    MappedVoiceprintJudge,
-)
 from transpodcast.boundary_adjudication import (
-    ADJUDICATION_POLICY_VERSION,
-    LEGACY_ADJUDICATION_POLICY_VERSION,
-    AdjudicationOutcome,
-    DiscourseAdjudicationResult,
     OwnershipDispute,
     VoiceprintVerdict,
-    adjudicate_ownership,
 )
 from transpodcast.decision_records import DecisionRecord
 from transpodcast.domain import CanonicalSegment, SourceAnalysisResult
+from transpodcast.natural_segmentation import (
+    NaturalSegmentationResult,
+    segment_naturally,
+)
 from transpodcast.pipeline_versions import (
-    SPEECH_PIPELINE_V11,
-    SPEECH_PIPELINE_V12,
-    SPEECH_PIPELINE_V13,
-    SPEECH_PIPELINE_V14,
+    CONTINUITY_PIPELINES,
+    SPEECH_PIPELINE_V15,
 )
-from transpodcast.source_segmentation import (
-    group_assigned_words,
-    join_words,
-)
-from transpodcast.speaker_boundary_adjudication import (
-    UNIFIED_BOUNDARY_POLICY_VERSION,
-    BoundaryPlanningResult,
-    BoundaryProposal,
-    BoundaryReviewResult,
-    UnifiedBoundaryApplication,
-    UnifiedBoundaryCandidate,
-    apply_unified_boundary_decisions,
-    build_unified_boundary_candidates,
-)
-from transpodcast.speaker_tail_boundary_repair import (
-    ATOMIC_SPEAKER_TAIL_REPAIR_POLICY_VERSION,
-    LEGACY_MAXIMUM_CANDIDATE_RATIO,
-    LEGACY_MAXIMUM_REPAIR_COUNT,
-    LEGACY_SPEAKER_TAIL_REPAIR_POLICY_VERSION,
-    SPEAKER_TAIL_REPAIR_POLICY_VERSION,
-    SpeakerTailCandidateSelection,
-    SpeakerTailRepairApplication,
-    SpeakerTailRepairCandidate,
-    SpeakerTailRepairResult,
-    apply_speaker_tail_repair_verdicts,
-    find_speaker_tail_repair_candidates,
-    preserve_speaker_tail_repair_candidates,
+from transpodcast.speaker_ownership_v15 import (
+    MAXIMUM_BATCH_CHARACTERS,
+    SPEAKER_OWNERSHIP_POLICY_VERSION,
+    SpeakerOwnershipPlanningResult,
+    SpeakerOwnershipRegion,
+    apply_speaker_ownership_plans,
+    batch_speaker_ownership_regions,
+    build_speaker_ownership_regions,
+    ownership_request_character_count,
+    parse_ownership_plans,
 )
 
 
 class DiscourseAdjudicator(Protocol):
-    def adjudicate_discourse(
+    def plan_speaker_ownership(
         self,
-        disputes: Sequence[OwnershipDispute],
-    ) -> DiscourseAdjudicationResult: ...
+        regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult: ...
 
-    def adjudicate_speaker_tail_repairs(
+    def review_speaker_ownership(
         self,
-        candidates: Sequence[SpeakerTailRepairCandidate],
-    ) -> SpeakerTailRepairResult: ...
-
-    def plan_speaker_boundaries(
-        self,
-        candidates: Sequence[UnifiedBoundaryCandidate],
-    ) -> BoundaryPlanningResult: ...
-
-    def review_speaker_boundaries(
-        self,
-        candidates: Sequence[UnifiedBoundaryCandidate],
-        proposals: dict[str, BoundaryProposal | None],
-    ) -> BoundaryReviewResult: ...
-
-
-@dataclass(frozen=True)
-class _TailRepairPipelinePolicy:
-    policy_version: str
-    maximum_candidate_ratio: float | None
-    maximum_repair_count: int | None
-
-
-_TAIL_REPAIR_PIPELINE_POLICIES = {
-    SPEECH_PIPELINE_V11: _TailRepairPipelinePolicy(
-        policy_version=LEGACY_SPEAKER_TAIL_REPAIR_POLICY_VERSION,
-        maximum_candidate_ratio=LEGACY_MAXIMUM_CANDIDATE_RATIO,
-        maximum_repair_count=LEGACY_MAXIMUM_REPAIR_COUNT,
-    ),
-    SPEECH_PIPELINE_V12: _TailRepairPipelinePolicy(
-        policy_version=SPEAKER_TAIL_REPAIR_POLICY_VERSION,
-        maximum_candidate_ratio=None,
-        maximum_repair_count=None,
-    ),
-    SPEECH_PIPELINE_V13: _TailRepairPipelinePolicy(
-        policy_version=ATOMIC_SPEAKER_TAIL_REPAIR_POLICY_VERSION,
-        maximum_candidate_ratio=None,
-        maximum_repair_count=None,
-    ),
-}
+        regions: Sequence[SpeakerOwnershipRegion],
+    ) -> SpeakerOwnershipPlanningResult: ...
 
 
 @dataclass(frozen=True)
@@ -132,426 +81,285 @@ class AdjudicationCompletion:
     model: str = ""
     cli_version: str = ""
     discourse_error: str | None = None
-    tail_repair_candidate_count: int = 0
-    tail_repair_proposed_count: int = 0
-    tail_repair_count: int = 0
-    tail_repair_locally_preserved_component_count: int = 0
-    tail_repair_locally_degraded_component_count: int = 0
-    tail_repair_conflict_component_count: int = 0
-    tail_repair_provider_degraded_component_count: int = 0
-    tail_repair_error: str | None = None
-    boundary_candidate_count: int = 0
-    boundary_planner_proposed_count: int = 0
-    boundary_reviewer_approved_count: int = 0
-    boundary_split_count: int = 0
-    boundary_reassign_count: int = 0
-    boundary_locally_preserved_component_count: int = 0
-    boundary_conflict_component_count: int = 0
-    boundary_provider_degraded_component_count: int = 0
+    ownership_region_count: int = 0
+    ownership_changed_word_count: int = 0
+    ownership_disputed_region_count: int = 0
+    natural_segment_count: int = 0
+    natural_fallback_boundary_count: int = 0
 
 
 def complete_boundary_adjudication(
     analysis: SourceAnalysisResult,
     adjudicator: DiscourseAdjudicator,
+    checkpoint_writer: Callable[[SourceAnalysisResult], None] | None = None,
+    *,
+    measure_edges: Callable[[list[tuple[int, int]]], dict[str, Any]] | None = None,
 ) -> AdjudicationCompletion:
-    if analysis.pipeline_version == SPEECH_PIPELINE_V14:
-        return _complete_unified_boundary_adjudication(analysis, adjudicator)
-    payload = json.loads(analysis.boundary_adjudication_json or "{}")
-    prior_decision_records = list(payload.get("decision_records") or [])
-    policy_version = str(payload.get("policy_version") or ADJUDICATION_POLICY_VERSION)
-    pending = payload.pop("pending", None)
-    tail_repair_policy = _tail_repair_pipeline_policy(analysis.pipeline_version)
-    tail_repair_enabled = tail_repair_policy is not None
-    if pending is None and (
-        not tail_repair_enabled or "speaker_tail_boundary_repair" in payload
-    ):
-        return AdjudicationCompletion(analysis=analysis)
-    if not tail_repair_enabled and not (pending or {}).get("disputes"):
-        return AdjudicationCompletion(analysis=analysis)
-    payload.pop("discourse_error", None)
-    disputes = [
-        replace(
-            OwnershipDispute.from_payload(item),
-            question_policy_version=policy_version,
+    if analysis.pipeline_version in CONTINUITY_PIPELINES:
+        from transpodcast.ownership_release import complete_released_ownership
+
+        return complete_released_ownership(
+            analysis, adjudicator, checkpoint_writer=checkpoint_writer,
+            measure_edges=measure_edges,
         )
-        for item in ((pending or {}).get("disputes") or [])
-    ]
-    voiceprints = {
-        dispute_id: (
-            VoiceprintVerdict.from_payload(verdict) if verdict is not None else None
+    if analysis.pipeline_version == SPEECH_PIPELINE_V15:
+        return _complete_speaker_ownership_v15(
+            analysis,
+            adjudicator,
+            checkpoint_writer=checkpoint_writer,
         )
-        for dispute_id, verdict in (pending or {}).get("voiceprints", {}).items()
-    }
-    answer = (
-        adjudicator.adjudicate_discourse(disputes)
-        if disputes
-        else DiscourseAdjudicationResult(verdicts={})
-    )
-    if (
-        disputes
-        and answer.error is None
-        and any(answer.verdicts.get(dispute.dispute_id) is None for dispute in disputes)
-    ):
-        # Explicit "unsure" answers are represented by a verdict whose
-        # owner is None. A missing mapping is different: the provider did
-        # not fulfill the batched contract and the run must show that
-        # degradation instead of pretending the response was complete.
-        answer = replace(
-            answer,
-            error="Provider answered but returned no verdicts.",
-        )
-    outcomes = (
-        adjudicate_ownership(
-            disputes,
-            voiceprint_judge=MappedVoiceprintJudge(voiceprints),
-            discourse_judge=MappedDiscourseJudge(answer.verdicts),
-            policy_version=policy_version,
-        )
-        if disputes
-        else []
-    )
-    disagreement_count = sum(
-        outcome.record.verdict in {"discourse-preferred", "voiceprint-preferred"}
-        for outcome in outcomes
-    )
-    abstention_count = sum(
-        outcome.record.evidence.get("voiceprint_scores") is None
-        or outcome.record.evidence.get("discourse_owner") is None
-        for outcome in outcomes
-    )
-    segments, marked = _apply_outcomes(
-        analysis.segments,
-        disputes,
-        outcomes,
-        policy_version=policy_version,
-    )
-    changed = sum(1 for outcome in outcomes if outcome.changed)
-    selection, repair_answer, repair_application = _prepare_speaker_tail_repairs(
-        replace(analysis, segments=segments),
-        adjudicator,
-    )
-    ownership_records = [outcome.record.to_payload() for outcome in outcomes]
-    repair_error = selection.guard_reason or repair_application.error
-    tail_repair_policy_version = (
-        tail_repair_policy.policy_version
-        if tail_repair_policy is not None
-        else LEGACY_SPEAKER_TAIL_REPAIR_POLICY_VERSION
-    )
-    combined_records = [
-        *(ownership_records if disputes else prior_decision_records),
-        *(record.to_payload() for record in repair_application.records),
-    ]
-    total_input_tokens = answer.input_tokens + repair_answer.input_tokens
-    total_output_tokens = answer.output_tokens + repair_answer.output_tokens
-    discourse_error = answer.error
-    tail_repair_summary: dict[str, Any] = {
-        "policy_version": tail_repair_policy_version,
-        "detected_count": selection.detected_count,
-        "candidate_count": len(selection.candidates),
-        "repair_count": repair_application.repair_count,
-        "marked_count": repair_application.marked_count,
-        "guard_rejected": selection.guard_rejected,
-        "decision_records": [
-            record.to_payload() for record in repair_application.records
-        ],
-        "discourse_usage": {
-            "input_tokens": repair_answer.input_tokens,
-            "output_tokens": repair_answer.output_tokens,
-        },
-        "discourse_execution": {
-            "provider": repair_answer.provider,
-            "model": repair_answer.model,
-            "cli_version": repair_answer.cli_version,
-        },
-    }
-    if tail_repair_policy_version == ATOMIC_SPEAKER_TAIL_REPAIR_POLICY_VERSION:
-        tail_repair_summary.update(
-            {
-                "proposed_repair_count": (repair_application.proposed_repair_count),
-                "locally_preserved_component_count": (
-                    repair_application.locally_preserved_component_count
-                ),
-                "locally_degraded_component_count": (
-                    repair_application.locally_degraded_component_count
-                ),
-                "conflict_component_count": (
-                    repair_application.conflict_component_count
-                ),
-                "provider_degraded_component_count": (
-                    repair_application.provider_degraded_component_count
-                ),
-            }
-        )
-    payload.update(
-        {
-            "policy_version": policy_version,
-            "changed_count": (
-                changed if disputes else int(payload.get("changed_count", 0))
-            ),
-            "marked_count": (
-                (marked if disputes else int(payload.get("marked_count", 0)))
-                + repair_application.marked_count
-            ),
-            "disagreement_count": (
-                disagreement_count
-                if disputes
-                else int(payload.get("disagreement_count", 0))
-            ),
-            "abstention_count": (
-                abstention_count
-                if disputes
-                else int(payload.get("abstention_count", 0))
-            ),
-            "decision_records": combined_records,
-            "discourse_usage": {
-                "input_tokens": total_input_tokens,
-                "output_tokens": total_output_tokens,
-            },
-            "discourse_execution": {
-                "provider": answer.provider,
-                "model": answer.model,
-                "cli_version": answer.cli_version,
-            },
-            "speaker_tail_boundary_repair": tail_repair_summary,
-        }
-    )
-    if discourse_error is not None:
-        payload["discourse_error"] = discourse_error
-    if repair_error is not None:
-        payload["speaker_tail_boundary_repair"]["error"] = repair_error
-    updated = replace(
-        analysis,
-        segments=repair_application.segments,
-        boundary_adjudication_json=json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-        speaker_consolidation_json=_with_attribution_records(
-            analysis.speaker_consolidation_json,
-            repair_application.segments,
-            analysis.pipeline_version,
-        ),
-    )
-    return AdjudicationCompletion(
-        analysis=updated,
-        completed=bool(disputes or selection.detected_count),
-        dispute_count=len(disputes),
-        changed_count=changed,
-        marked_count=marked + repair_application.marked_count,
-        input_tokens=total_input_tokens,
-        output_tokens=total_output_tokens,
-        provider=answer.provider or repair_answer.provider,
-        model=answer.model or repair_answer.model,
-        cli_version=answer.cli_version or repair_answer.cli_version,
-        discourse_error=discourse_error,
-        tail_repair_candidate_count=len(selection.candidates),
-        tail_repair_proposed_count=(repair_application.proposed_repair_count),
-        tail_repair_count=repair_application.repair_count,
-        tail_repair_locally_preserved_component_count=(
-            repair_application.locally_preserved_component_count
-        ),
-        tail_repair_locally_degraded_component_count=(
-            repair_application.locally_degraded_component_count
-        ),
-        tail_repair_conflict_component_count=(
-            repair_application.conflict_component_count
-        ),
-        tail_repair_provider_degraded_component_count=(
-            repair_application.provider_degraded_component_count
-        ),
-        tail_repair_error=repair_error,
-    )
+    return AdjudicationCompletion(analysis=analysis)
 
 
-def _complete_unified_boundary_adjudication(
+def _complete_speaker_ownership_v15(
     analysis: SourceAnalysisResult,
     adjudicator: DiscourseAdjudicator,
+    *,
+    checkpoint_writer: Callable[[SourceAnalysisResult], None] | None = None,
 ) -> AdjudicationCompletion:
     payload = json.loads(analysis.boundary_adjudication_json or "{}")
-    if "unified_boundary_adjudication" in payload:
+    if "speaker_ownership_v15" in payload:
         return AdjudicationCompletion(analysis=analysis)
-    pending = payload.pop("pending", None) or {}
-    raw_disputes = pending.get("disputes") or []
-    disputes: list[OwnershipDispute] = []
-    candidates: tuple[UnifiedBoundaryCandidate, ...] = ()
-    planning = BoundaryPlanningResult(proposals={})
-    review = BoundaryReviewResult(verdicts={})
-    try:
-        disputes = [OwnershipDispute.from_payload(item) for item in raw_disputes]
-        voiceprints = {
-            dispute_id: (
-                VoiceprintVerdict.from_payload(verdict) if verdict is not None else None
-            )
-            for dispute_id, verdict in (pending.get("voiceprints") or {}).items()
-        }
-        consolidation = json.loads(analysis.speaker_consolidation_json or "{}")
-        speaker_mapping = {
-            str(source): str(target)
-            for source, target in (consolidation.get("speaker_mapping") or {}).items()
-        }
-        tail_selection = find_speaker_tail_repair_candidates(
-            analysis.segments,
-            analysis.raw_diarization_turns,
-            speaker_mapping,
-            maximum_candidate_ratio=None,
-        )
-        candidates = build_unified_boundary_candidates(
-            analysis.segments,
-            disputes,
-            voiceprints,
-            tail_selection.candidates,
-            analysis.raw_diarization_turns,
-            speaker_mapping,
-        )
-    except Exception as error:
-        planning = BoundaryPlanningResult(
-            proposals={},
-            error=_boundary_internal_error(error),
-        )
-    if candidates and planning.error is None:
+    pending = payload.get("pending") or {}
+    boundary_disputes: list[OwnershipDispute] = []
+    voiceprints: dict[str, VoiceprintVerdict | None] = {}
+    evidence_errors: list[str] = []
+    for raw_dispute in pending.get("disputes") or []:
         try:
-            planning = adjudicator.plan_speaker_boundaries(candidates)
-        except Exception as error:
-            planning = BoundaryPlanningResult(
-                proposals={},
-                error=_boundary_internal_error(error),
+            boundary_disputes.append(
+                OwnershipDispute.from_payload(dict(raw_dispute))
             )
-        if planning.error is None:
+        except Exception as error:
+            evidence_errors.append(_boundary_internal_error(error))
+    for dispute_id, raw_voiceprint in (
+        pending.get("voiceprints") or {}
+    ).items():
+        try:
+            voiceprints[str(dispute_id)] = (
+                VoiceprintVerdict.from_payload(dict(raw_voiceprint))
+                if raw_voiceprint is not None
+                else None
+            )
+        except Exception as error:
+            evidence_errors.append(_boundary_internal_error(error))
+    consolidation = json.loads(analysis.speaker_consolidation_json or "{}")
+    speaker_mapping = {
+        str(source): str(target)
+        for source, target in (consolidation.get("speaker_mapping") or {}).items()
+    }
+    regions = build_speaker_ownership_regions(
+        analysis.segments,
+        analysis.raw_diarization_turns,
+        speaker_mapping,
+        analysis.full_asr_text,
+        boundary_disputes,
+        voiceprints,
+    )
+    oversized_regions = tuple(
+        region
+        for region in regions
+        if ownership_request_character_count((region,))
+        > MAXIMUM_BATCH_CHARACTERS
+    )
+    oversized_region_ids = {region.region_id for region in oversized_regions}
+    batches = batch_speaker_ownership_regions(
+        tuple(
+            region
+            for region in regions
+            if region.region_id not in oversized_region_ids
+        )
+    )
+    planning_plans: dict[str, Any] = {}
+    review_plans: dict[str, Any] = {}
+    oversized_error = (
+        "Speaker Ownership Risk Region exceeds the request envelope and was "
+        "locally preserved"
+    )
+    planning_errors: dict[str, str] = {
+        region.region_id: oversized_error for region in oversized_regions
+    }
+    review_errors: dict[str, str] = {
+        region.region_id: oversized_error for region in oversized_regions
+    }
+    raw_plans: dict[str, tuple[dict[str, Any], ...]] = {}
+    raw_reviews: dict[str, tuple[dict[str, Any], ...]] = {}
+    planning_input_tokens = 0
+    planning_output_tokens = 0
+    review_input_tokens = 0
+    review_output_tokens = 0
+    planning_provider = ""
+    planning_model = ""
+    planning_cli_version = ""
+    review_provider = ""
+    review_model = ""
+    review_cli_version = ""
+    batch_records: list[dict[str, Any]] = []
+    degraded_errors: list[str] = [
+        *evidence_errors,
+        *([oversized_error] if oversized_regions else []),
+    ]
+    checkpoint_payload = payload.get("speaker_ownership_v15_checkpoint")
+    completed_checkpoints = {
+        str(item.get("fingerprint")): item
+        for item in (
+            checkpoint_payload.get("completed_batches", [])
+            if isinstance(checkpoint_payload, dict)
+            else []
+        )
+        if isinstance(item, dict) and item.get("fingerprint")
+    }
+    for batch_index, batch in enumerate(batches, start=1):
+        fingerprint = _ownership_batch_fingerprint(batch)
+        checkpoint = completed_checkpoints.get(fingerprint)
+        if checkpoint is not None:
+            planned = _planning_result_from_checkpoint(
+                checkpoint.get("planner"),
+                batch,
+            )
+            reviewed = _planning_result_from_checkpoint(
+                checkpoint.get("reviewer"),
+                batch,
+            )
+        else:
             try:
-                review = adjudicator.review_speaker_boundaries(
-                    candidates,
-                    planning.proposals,
-                )
+                planned = adjudicator.plan_speaker_ownership(batch)
             except Exception as error:
-                review = BoundaryReviewResult(
-                    verdicts={},
+                planned = SpeakerOwnershipPlanningResult(
+                    plans={},
                     error=_boundary_internal_error(error),
                 )
-    try:
-        application = apply_unified_boundary_decisions(
-            analysis.segments,
-            candidates,
-            planning,
-            review,
-        )
-    except Exception as error:
-        reason = f"{type(error).__name__}: {error}"[:500]
-        planning = replace(
-            planning,
-            proposals={candidate.candidate_id: None for candidate in candidates},
-            error=reason,
-        )
-        application = apply_unified_boundary_decisions(
-            analysis.segments,
-            candidates,
-            planning,
-            review,
-        )
-
-    prior_records = list(payload.get("decision_records") or [])
-    total_input_tokens = planning.input_tokens + review.input_tokens
-    total_output_tokens = planning.output_tokens + review.output_tokens
-    summary = _unified_boundary_summary(
-        candidates,
+            try:
+                reviewed = adjudicator.review_speaker_ownership(batch)
+            except Exception as error:
+                reviewed = SpeakerOwnershipPlanningResult(
+                    plans={},
+                    error=_boundary_internal_error(error),
+                )
+        planning_input_tokens += planned.input_tokens
+        planning_output_tokens += planned.output_tokens
+        planning_provider = planned.provider or planning_provider
+        planning_model = planned.model or planning_model
+        planning_cli_version = planned.cli_version or planning_cli_version
+        planning_plans.update(planned.plans)
+        planning_errors.update(planned.validation_errors or {})
+        raw_plans.update(planned.raw_plans or {})
+        if planned.error is not None:
+            degraded_errors.append(planned.error)
+            for region in batch:
+                planning_errors.setdefault(region.region_id, planned.error)
+        review_input_tokens += reviewed.input_tokens
+        review_output_tokens += reviewed.output_tokens
+        review_provider = reviewed.provider or review_provider
+        review_model = reviewed.model or review_model
+        review_cli_version = reviewed.cli_version or review_cli_version
+        review_plans.update(reviewed.plans)
+        review_errors.update(reviewed.validation_errors or {})
+        raw_reviews.update(reviewed.raw_plans or {})
+        if reviewed.error is not None:
+            degraded_errors.append(reviewed.error)
+            for region in batch:
+                review_errors.setdefault(region.region_id, reviewed.error)
+        batch_record = {
+            "batch_index": batch_index,
+            "region_ids": [region.region_id for region in batch],
+            "fingerprint": fingerprint,
+            "resumed_from_checkpoint": checkpoint is not None,
+            "request_characters": ownership_request_character_count(batch),
+            "planner_error": planned.error,
+            "reviewer_error": reviewed.error,
+            "planner_provider": planned.provider,
+            "planner_model": planned.model,
+            "planner_cli_version": planned.cli_version,
+            "reviewer_provider": reviewed.provider,
+            "reviewer_model": reviewed.model,
+            "reviewer_cli_version": reviewed.cli_version,
+            "planner_input_tokens": planned.input_tokens,
+            "planner_output_tokens": planned.output_tokens,
+            "reviewer_input_tokens": reviewed.input_tokens,
+            "reviewer_output_tokens": reviewed.output_tokens,
+        }
+        batch_records.append(batch_record)
+        if checkpoint is None:
+            completed_checkpoints[fingerprint] = {
+                **batch_record,
+                "planner": _planning_result_to_checkpoint(planned),
+                "reviewer": _planning_result_to_checkpoint(reviewed),
+            }
+            if checkpoint_writer is not None:
+                partial_payload = dict(payload)
+                partial_payload["speaker_ownership_v15_checkpoint"] = {
+                    "policy_version": SPEAKER_OWNERSHIP_POLICY_VERSION,
+                    "completed_batches": list(completed_checkpoints.values()),
+                }
+                checkpoint_writer(
+                    replace(
+                        analysis,
+                        boundary_adjudication_json=json.dumps(
+                            partial_payload,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    )
+                )
+    planning = SpeakerOwnershipPlanningResult(
+        plans=planning_plans,
+        input_tokens=planning_input_tokens,
+        output_tokens=planning_output_tokens,
+        provider=planning_provider,
+        model=planning_model,
+        cli_version=planning_cli_version,
+        validation_errors=planning_errors,
+        raw_plans=raw_plans,
+    )
+    review = SpeakerOwnershipPlanningResult(
+        plans=review_plans,
+        input_tokens=review_input_tokens,
+        output_tokens=review_output_tokens,
+        provider=review_provider,
+        model=review_model,
+        cli_version=review_cli_version,
+        validation_errors=review_errors,
+        raw_plans=raw_reviews,
+    )
+    application = apply_speaker_ownership_plans(
+        analysis.segments,
+        regions,
         planning,
         review,
-        application,
+        raw_turns=analysis.raw_diarization_turns,
+        speaker_mapping=speaker_mapping,
     )
-    payload.update(
-        {
-            "policy_version": UNIFIED_BOUNDARY_POLICY_VERSION,
-            "changed_count": (
-                application.split_to_next_count + application.reassign_whole_count
-            ),
-            "marked_count": (
-                application.split_to_next_count + application.reassign_whole_count
-            ),
-            "decision_records": [
-                *prior_records,
-                *(record.to_payload() for record in application.records),
-            ],
-            "discourse_usage": {
-                "input_tokens": total_input_tokens,
-                "output_tokens": total_output_tokens,
-            },
-            "discourse_execution": {
-                "provider": planning.provider or review.provider,
-                "model": planning.model or review.model,
-                "cli_version": planning.cli_version or review.cli_version,
-            },
-            "unified_boundary_adjudication": summary,
-        }
-    )
-    if application.error is not None:
-        payload["unified_boundary_adjudication"]["error"] = application.error
-    updated = replace(
-        analysis,
-        segments=application.segments,
-        boundary_adjudication_json=json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
+    natural = segment_naturally(
+        application.segments,
+        full_asr_text=analysis.full_asr_text,
+        protected_word_ranges=tuple(
+            (region.start_word_index, region.end_word_index)
+            for region in regions
+            if {
+                "crosstalk",
+                "multiple-handoffs",
+                "three-speaker",
+            }
+            & set(region.trigger_reasons)
         ),
-        speaker_consolidation_json=_with_attribution_records(
-            analysis.speaker_consolidation_json,
-            application.segments,
-            analysis.pipeline_version,
+        source_event_ranges=tuple(
+            (start_seconds, end_seconds)
+            for _kind, start_seconds, end_seconds in analysis.source_events
         ),
     )
-    changed_count = application.split_to_next_count + application.reassign_whole_count
-    return AdjudicationCompletion(
-        analysis=updated,
-        completed=bool(candidates),
-        dispute_count=len(disputes) if disputes else len(raw_disputes),
-        changed_count=changed_count,
-        marked_count=changed_count,
-        input_tokens=total_input_tokens,
-        output_tokens=total_output_tokens,
-        provider=planning.provider or review.provider,
-        model=planning.model or review.model,
-        cli_version=planning.cli_version or review.cli_version,
-        discourse_error=application.error,
-        boundary_candidate_count=len(candidates),
-        boundary_planner_proposed_count=application.planner_proposed_count,
-        boundary_reviewer_approved_count=application.reviewer_approved_count,
-        boundary_split_count=application.split_to_next_count,
-        boundary_reassign_count=application.reassign_whole_count,
-        boundary_locally_preserved_component_count=(
-            application.locally_preserved_component_count
+    natural_records = _natural_boundary_records(natural)
+    summary = {
+        "policy_version": SPEAKER_OWNERSHIP_POLICY_VERSION,
+        "region_count": len(regions),
+        "batch_count": len(batches),
+        "oversized_region_count": len(oversized_regions),
+        "changed_word_count": application.changed_word_count,
+        "applied_region_count": application.applied_region_count,
+        "disputed_region_count": application.disputed_region_count,
+        "possible_missing_speech_count": (
+            application.possible_missing_speech_count
         ),
-        boundary_conflict_component_count=(application.conflict_component_count),
-        boundary_provider_degraded_component_count=(
-            application.provider_degraded_component_count
-        ),
-    )
-
-
-def _boundary_internal_error(error: Exception) -> str:
-    return f"{type(error).__name__}: {error}"[:500]
-
-
-def _unified_boundary_summary(
-    candidates: Sequence[UnifiedBoundaryCandidate],
-    planning: BoundaryPlanningResult,
-    review: BoundaryReviewResult,
-    application: UnifiedBoundaryApplication,
-) -> dict[str, Any]:
-    return {
-        "policy_version": UNIFIED_BOUNDARY_POLICY_VERSION,
-        "candidate_count": len(candidates),
-        "planner_proposed_count": application.planner_proposed_count,
-        "reviewer_approved_count": application.reviewer_approved_count,
-        "split_to_next_count": application.split_to_next_count,
-        "reassign_whole_count": application.reassign_whole_count,
-        "locally_preserved_component_count": (
-            application.locally_preserved_component_count
-        ),
-        "conflict_component_count": application.conflict_component_count,
-        "provider_degraded_component_count": (
-            application.provider_degraded_component_count
-        ),
-        "decision_records": [record.to_payload() for record in application.records],
+        "preserved_region_count": application.preserved_region_count,
         "planner_usage": {
             "input_tokens": planning.input_tokens,
             "output_tokens": planning.output_tokens,
@@ -570,292 +378,186 @@ def _unified_boundary_summary(
             "model": review.model,
             "cli_version": review.cli_version,
         },
+        "batches": batch_records,
+        "natural_segmentation": natural.to_summary(),
+        "decision_records": [
+            record.to_payload()
+            for record in (*application.records, *natural_records)
+        ],
     }
-
-
-def _speaker_tail_repair_candidates(
-    analysis: SourceAnalysisResult,
-) -> SpeakerTailCandidateSelection:
-    policy = _tail_repair_pipeline_policy(analysis.pipeline_version)
-    if policy is None:
-        return find_speaker_tail_repair_candidates((), (), {})
-    consolidation = json.loads(analysis.speaker_consolidation_json or "{}")
-    mapping = {
-        str(source): str(target)
-        for source, target in (consolidation.get("speaker_mapping") or {}).items()
-    }
-    return find_speaker_tail_repair_candidates(
-        analysis.segments,
-        analysis.raw_diarization_turns,
-        mapping,
-        maximum_candidate_ratio=policy.maximum_candidate_ratio,
+    prior_records = list(payload.get("decision_records") or [])
+    payload.pop("pending", None)
+    payload.pop("speaker_ownership_v15_checkpoint", None)
+    payload.update(
+        {
+            "policy_version": SPEAKER_OWNERSHIP_POLICY_VERSION,
+            "changed_count": application.applied_region_count,
+            "marked_count": application.disputed_region_count,
+            "decision_records": [
+                *prior_records,
+                *(record.to_payload() for record in application.records),
+                *(record.to_payload() for record in natural_records),
+            ],
+            "speaker_ownership_v15": summary,
+        }
+    )
+    if degraded_errors:
+        payload["speaker_ownership_v15"]["degraded_errors"] = list(
+            dict.fromkeys(degraded_errors)
+        )
+    updated = replace(
+        analysis,
+        segments=natural.segments,
+        boundary_adjudication_json=json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        speaker_consolidation_json=_with_attribution_records(
+            analysis.speaker_consolidation_json,
+            natural.segments,
+            analysis.pipeline_version,
+        ),
+    )
+    return AdjudicationCompletion(
+        analysis=updated,
+        completed=True,
+        dispute_count=len(regions),
+        changed_count=application.changed_word_count,
+        marked_count=application.disputed_region_count,
+        input_tokens=planning.input_tokens + review.input_tokens,
+        output_tokens=planning.output_tokens + review.output_tokens,
+        provider=planning.provider or review.provider,
+        model=planning.model or review.model,
+        cli_version=planning.cli_version or review.cli_version,
+        discourse_error=(degraded_errors[0] if degraded_errors else None),
+        ownership_region_count=len(regions),
+        ownership_changed_word_count=application.changed_word_count,
+        ownership_disputed_region_count=application.disputed_region_count,
+        natural_segment_count=len(natural.segments),
+        natural_fallback_boundary_count=natural.fallback_boundary_count,
     )
 
 
-def _prepare_speaker_tail_repairs(
-    analysis: SourceAnalysisResult,
-    adjudicator: DiscourseAdjudicator,
-) -> tuple[
-    SpeakerTailCandidateSelection,
-    SpeakerTailRepairResult,
-    SpeakerTailRepairApplication,
-]:
-    selection = SpeakerTailCandidateSelection(candidates=(), detected_count=0)
-    answer = SpeakerTailRepairResult(verdicts={})
-    policy = _tail_repair_pipeline_policy(analysis.pipeline_version)
-    policy_version = (
-        policy.policy_version
-        if policy is not None
-        else LEGACY_SPEAKER_TAIL_REPAIR_POLICY_VERSION
+def _natural_boundary_records(
+    natural: NaturalSegmentationResult,
+) -> tuple[DecisionRecord, ...]:
+    return tuple(
+        DecisionRecord(
+            kind="natural-segmentation-boundary",
+            policy_version=natural.policy_version,
+            subject={
+                "after_word_index": boundary.after_word_index,
+                "before_word_index": boundary.before_word_index,
+                "boundary_seconds": boundary.boundary_seconds,
+            },
+            evidence={"boundary_kind": boundary.kind},
+            verdict=(
+                "fallback-cut"
+                if boundary.kind == "fallback"
+                else "natural-boundary"
+            ),
+            rationale=(
+                "The hard duration envelope required a non-natural cut."
+                if boundary.kind == "fallback"
+                else f"The {boundary.kind} boundary was selected."
+            ),
+        )
+        for boundary in natural.boundaries
     )
+
+
+def _ownership_batch_fingerprint(
+    batch: Sequence[SpeakerOwnershipRegion],
+) -> str:
+    canonical = json.dumps(
+        [region.to_payload() for region in batch],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _planning_result_to_checkpoint(
+    result: SpeakerOwnershipPlanningResult,
+) -> dict[str, Any]:
+    return {
+        "plans": [
+            {"region_id": region_id, **plan.to_payload()}
+            for region_id, plan in result.plans.items()
+            if plan is not None
+        ],
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "provider": result.provider,
+        "model": result.model,
+        "cli_version": result.cli_version,
+        "error": result.error,
+        "validation_errors": result.validation_errors or {},
+        "raw_plans": {
+            region_id: list(values)
+            for region_id, values in (result.raw_plans or {}).items()
+        },
+    }
+
+
+def _planning_result_from_checkpoint(
+    value: object,
+    batch: Sequence[SpeakerOwnershipRegion],
+) -> SpeakerOwnershipPlanningResult:
+    if not isinstance(value, dict):
+        return SpeakerOwnershipPlanningResult(
+            plans={},
+            error="Speaker ownership batch checkpoint is malformed",
+        )
+    raw_plan_items = value.get("plans")
     try:
-        selection = _speaker_tail_repair_candidates(analysis)
-        selection = replace(
-            selection,
-            candidates=tuple(
-                replace(
-                    candidate,
-                    question_policy_version=policy_version,
-                )
-                for candidate in selection.candidates
-            ),
-            rejected_candidates=tuple(
-                replace(
-                    candidate,
-                    question_policy_version=policy_version,
-                )
-                for candidate in selection.rejected_candidates
-            ),
+        plans, parse_errors, parsed_raw = parse_ownership_plans(
+            {"plans": raw_plan_items},
+            batch,
         )
-        if selection.guard_rejected:
-            reason = selection.guard_reason or (
-                "Speaker tail repair candidate population was rejected."
-            )
-            application = preserve_speaker_tail_repair_candidates(
-                analysis.segments,
-                selection.rejected_candidates,
-                reason,
-                result=answer,
-                policy_version=policy_version,
-            )
-            return selection, answer, application
-        if selection.candidates:
-            answer = adjudicator.adjudicate_speaker_tail_repairs(selection.candidates)
-        application = apply_speaker_tail_repair_verdicts(
-            analysis.segments,
-            selection.candidates,
-            answer,
-            maximum_repair_count=(
-                policy.maximum_repair_count if policy is not None else None
-            ),
-            policy_version=policy_version,
+    except (TypeError, ValueError) as error:
+        return SpeakerOwnershipPlanningResult(
+            plans={},
+            error=f"{type(error).__name__}: {error}",
         )
-    except Exception as error:
-        reason = _tail_repair_internal_error(error)
-        answer = replace(answer, verdicts={}, error=reason)
-        application = preserve_speaker_tail_repair_candidates(
-            analysis.segments,
-            (*selection.candidates, *selection.rejected_candidates),
-            reason,
-            result=answer,
-            policy_version=policy_version,
-        )
-    return selection, answer, application
-
-
-def _tail_repair_internal_error(error: Exception) -> str:
-    return f"{type(error).__name__}: {error}"[:500]
-
-
-def _tail_repair_pipeline_policy(
-    pipeline_version: str,
-) -> _TailRepairPipelinePolicy | None:
-    return _TAIL_REPAIR_PIPELINE_POLICIES.get(pipeline_version)
-
-
-def supports_speaker_tail_repair(pipeline_version: str) -> bool:
-    return _tail_repair_pipeline_policy(pipeline_version) is not None
-
-
-def _apply_outcomes(
-    segments: tuple[CanonicalSegment, ...],
-    disputes: list[OwnershipDispute],
-    outcomes: list[AdjudicationOutcome],
-    *,
-    policy_version: str = ADJUDICATION_POLICY_VERSION,
-) -> tuple[tuple[CanonicalSegment, ...], int]:
-    items = list(segments)
-    by_id = {dispute.dispute_id: dispute for dispute in disputes}
-    segment_indexes = {
-        dispute.dispute_id: _dispute_segment_index(items, dispute)
-        for dispute in disputes
+    stored_errors = value.get("validation_errors")
+    validation_errors = {
+        **(
+            {str(key): str(error) for key, error in stored_errors.items()}
+            if isinstance(stored_errors, dict)
+            else {}
+        ),
+        **parse_errors,
     }
-    for outcome in outcomes:
-        if not outcome.changed:
-            continue
-        dispute = by_id[outcome.dispute_id]
-        index = segment_indexes[outcome.dispute_id]
-        items[index] = replace(
-            items[index],
-            speaker_label=outcome.final_owner,
+    stored_raw = value.get("raw_plans")
+    raw_plans = dict(parsed_raw)
+    if isinstance(stored_raw, dict):
+        raw_plans.update(
+            {
+                str(region_id): tuple(
+                    item for item in items if isinstance(item, dict)
+                )
+                for region_id, items in stored_raw.items()
+                if isinstance(items, list)
+            }
         )
-    if policy_version == LEGACY_ADJUDICATION_POLICY_VERSION and any(
-        outcome.changed for outcome in outcomes
-    ):
-        items = list(_resegment_with_v6_rules(items))
-    marked = 0
-    for outcome in outcomes:
-        if not outcome.disputed_marker:
-            continue
-        dispute = by_id[outcome.dispute_id]
-        expected_words = {_word_signature(word) for word in dispute.words}
-        matches = [
-            position
-            for position, segment in enumerate(items)
-            if segment.speaker_label == outcome.final_owner
-            and _segment_word_signatures(segment) & expected_words
-        ]
-        covered_words = set().union(
-            *(
-                _segment_word_signatures(items[position]) & expected_words
-                for position in matches
-            )
-        )
-        if covered_words != expected_words:
-            raise ValueError(
-                f"Ownership dispute {dispute.dispute_id} cannot be marked "
-                "in the Canonical Transcript"
-            )
-        for position in matches:
-            items[position] = replace(
-                items[position],
-                review_state="disputed",
-            )
-        marked += 1
-    return tuple(items), marked
-
-
-def _dispute_segment_index(
-    segments: list[CanonicalSegment],
-    dispute: OwnershipDispute,
-) -> int:
-    matches = [
-        index
-        for index, segment in enumerate(segments)
-        if segment.speaker_label == dispute.current_owner
-        and abs(segment.start_seconds - dispute.start_seconds) < 1e-6
-        and abs(segment.end_seconds - dispute.end_seconds) < 1e-6
-        and _segment_contains_dispute(segment, dispute)
-    ]
-    if len(matches) != 1:
-        raise ValueError(
-            f"Ownership dispute {dispute.dispute_id} does not match "
-            "a Canonical Transcript segment"
-        )
-    return matches[0]
-
-
-def _segment_contains_dispute(
-    segment: CanonicalSegment,
-    dispute: OwnershipDispute,
-) -> bool:
-    segment_words = tuple(
-        (str(text), float(start), float(end)) for text, start, end in segment.words
-    )
-    disputed_words = tuple(
-        (
-            str(word["text"]),
-            float(word["start_seconds"]),
-            float(word["end_seconds"]),
-        )
-        for word in dispute.words
-    )
-    width = len(disputed_words)
-    return any(
-        all(
-            actual[0] == expected[0]
-            and abs(actual[1] - expected[1]) < 1e-6
-            and abs(actual[2] - expected[2]) < 1e-6
-            for actual, expected in zip(
-                segment_words[start : start + width],
-                disputed_words,
-                strict=True,
-            )
-        )
-        for start in range(len(segment_words) - width + 1)
+    return SpeakerOwnershipPlanningResult(
+        plans=plans,
+        input_tokens=int(value.get("input_tokens", 0)),
+        output_tokens=int(value.get("output_tokens", 0)),
+        provider=str(value.get("provider", "")),
+        model=str(value.get("model", "")),
+        cli_version=str(value.get("cli_version", "")),
+        error=(str(value["error"]) if value.get("error") is not None else None),
+        validation_errors=validation_errors,
+        raw_plans=raw_plans,
     )
 
 
-def _segment_word_signatures(
-    segment: CanonicalSegment,
-) -> set[tuple[str, float, float]]:
-    return {(str(text), float(start), float(end)) for text, start, end in segment.words}
-
-
-def _word_signature(word: dict[str, Any]) -> tuple[str, float, float]:
-    return (
-        str(word["text"]),
-        float(word["start_seconds"]),
-        float(word["end_seconds"]),
-    )
-
-
-def _resegment_with_v6_rules(
-    segments: list[CanonicalSegment],
-) -> tuple[CanonicalSegment, ...]:
-    """Preserve exact V9 checkpoint semantics for unfinished V2 runs."""
-    assigned: list[dict[str, Any]] = []
-    for segment in segments:
-        words = segment.words or (
-            (segment.text, segment.start_seconds, segment.end_seconds),
-        )
-        for text, start_seconds, end_seconds in words:
-            assigned.append(
-                {
-                    "text": text,
-                    "start_seconds": start_seconds,
-                    "end_seconds": end_seconds,
-                    "speaker": segment.speaker_label,
-                    "overlap": segment.overlap,
-                    "events": segment.events,
-                    "confidence": segment.confidence,
-                    "review_state": segment.review_state,
-                }
-            )
-    groups = group_assigned_words(assigned)
-    rebuilt = []
-    for index, group in enumerate(groups, start=1):
-        events = tuple(
-            dict.fromkeys(event for word in group for event in tuple(word["events"]))
-        )
-        review_states = [
-            str(word["review_state"])
-            for word in group
-            if str(word["review_state"]) != "accepted"
-        ]
-        rebuilt.append(
-            CanonicalSegment(
-                segment_id=f"seg-{index:04d}",
-                speaker_label=str(group[0]["speaker"]),
-                start_seconds=float(group[0]["start_seconds"]),
-                end_seconds=float(group[-1]["end_seconds"]),
-                text=join_words(group),
-                words=tuple(
-                    (
-                        str(word["text"]),
-                        float(word["start_seconds"]),
-                        float(word["end_seconds"]),
-                    )
-                    for word in group
-                ),
-                overlap=any(bool(word["overlap"]) for word in group),
-                events=events,
-                confidence=min(float(word["confidence"]) for word in group),
-                review_state=(review_states[0] if review_states else "accepted"),
-                omitted_as_sponsor=False,
-            )
-        )
-    return tuple(rebuilt)
+def _boundary_internal_error(error: Exception) -> str:
+    return f"{type(error).__name__}: {error}"[:500]
 
 
 def _with_attribution_records(

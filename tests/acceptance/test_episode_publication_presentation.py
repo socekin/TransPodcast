@@ -104,6 +104,8 @@ class ChapterAnalysis(FakeAnalysisAdapter):
         return replace(
             result,
             segments=segments,
+            # This metadata fixture keeps its historical segmentation.
+            pipeline_version="transpodcast-modal-pipeline-v15",
             checksum="chapter-analysis-checksum",
         )
 

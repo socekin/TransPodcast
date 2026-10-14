@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -659,6 +661,130 @@ def test_incomplete_review_resumes_only_the_reviewer_session(
     assert audit["author_sessions"] == ["author-session"]
     assert audit["reviewer_sessions"] == ["reviewer-session"]
     assert audit["reviewer_turns"] == 2
+
+
+class ConflictingVerdictRunner(ProgressiveProjectRunner):
+    def __init__(self, resolution: str) -> None:
+        super().__init__()
+        self.resolution = resolution
+        self.review_turn = 0
+        self.validation_results: list[subprocess.CompletedProcess[str]] = []
+
+    def run_project(
+        self,
+        *,
+        root: Path,
+        instructions: str,
+        session_id: str | None,
+    ) -> ProjectExecution:
+        execution = super().run_project(
+            root=root,
+            instructions=instructions,
+            session_id=session_id,
+        )
+        if root.name != "review":
+            return execution
+        self.review_turn += 1
+        if self.review_turn > 1:
+            assert "APPROVED: yes" in instructions
+            assert "UNRESOLVED" in instructions
+        verdict_path = root / "verdict.md"
+        verdict = verdict_path.read_text(encoding="utf-8").replace(
+            "SOURCE_WARNINGS:\n- (none)",
+            "SOURCE_WARNINGS:\n- The source speaker labels need audio review.",
+        )
+        if self.review_turn == 1 or self.resolution == "unchanged":
+            verdict = verdict.replace(
+                "UNRESOLVED:\n- (none)",
+                "UNRESOLVED:\n- No remaining target-only defects identified. "
+                "Approval covers translation fidelity to the supplied material, "
+                "not verification of the episode's factual claims. "
+                "Source-dependent uncertainty is recorded below.",
+            )
+        elif self.resolution == "rejected":
+            verdict = verdict.replace("APPROVED: yes", "APPROVED: no").replace(
+                "UNRESOLVED:\n- (none)",
+                "UNRESOLVED:\n- Target negation cannot be resolved.",
+            )
+        verdict_path.write_text(verdict, encoding="utf-8")
+        self.validation_results.append(
+            subprocess.run(
+                [sys.executable, "validate.py"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        )
+        return execution
+
+
+def test_conflicting_approval_resumes_reviewer_without_retranslating(
+    tmp_path: Path,
+) -> None:
+    runner = ConflictingVerdictRunner("approved")
+    adapter = CodexTranslationAdapter(
+        runner,  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+
+    result = adapter.translate(_candidate(1))
+
+    assert runner.invocations == [
+        ("author", None),
+        ("review", None),
+        ("review", "reviewer-session"),
+    ]
+    assert runner.validation_results[0].returncode != 0
+    assert "UNRESOLVED" in runner.validation_results[0].stderr
+    assert runner.validation_results[1].returncode == 0
+    audit = json.loads(result.audit_json)
+    assert audit["source_warnings"] == ["The source speaker labels need audio review."]
+    assert audit["authored"] == audit["reviewed"]
+    assert audit["reviewer_turns"] == 2
+    assert result.input_tokens == 300
+    assert result.output_tokens == 60
+
+
+@pytest.mark.parametrize("resolution", ["rejected", "unchanged"])
+def test_conflicting_approval_never_bypasses_unresolved_issues(
+    tmp_path: Path,
+    resolution: str,
+) -> None:
+    runner = ConflictingVerdictRunner(resolution)
+    adapter = CodexTranslationAdapter(
+        runner,  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="unresolved uncertainty"):
+            adapter.translate(_candidate(1))
+        assert runner.review_turn == 2
+    assert runner.validation_results[0].returncode != 0
+    if resolution == "rejected":
+        assert runner.validation_results[1].returncode == 0
+
+
+def test_verdict_repair_budget_resets_for_a_new_independent_review(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "translation-projects"
+    for index in range(2):
+        runner = ConflictingVerdictRunner("approved")
+        result = CodexTranslationAdapter(
+            runner,  # type: ignore[arg-type]
+            project_root=project_root,
+        ).translate(_candidate(1))
+        assert runner.review_turn == 2
+        assert result.reviewed is True
+        if index == 0:
+            mark_translation_project_reprocess(tmp_path, 88)
+        else:
+            assert runner.invocations == [
+                ("review", None),
+                ("review", "reviewer-session"),
+            ]
 
 
 class FailedAuthorTurnRunner(ProgressiveProjectRunner):

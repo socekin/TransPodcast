@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from transpodcast.api import create_app
 from transpodcast.domain import SourceCandidate
 from transpodcast.models import ProcessingRunRecord, ProcessingStageRecord
+from transpodcast.pipeline_versions import SPEECH_PIPELINE_V21, SPEECH_PIPELINE_V22
 from transpodcast.service import TransPodcastService, _default_settings
 from transpodcast.testing import AcceptanceHarness, FakeSourceAdapter
 
@@ -245,6 +246,53 @@ def test_explicit_source_video_import_preserves_channel_mode_and_is_idempotent(
         == "paused"
     )
     assert len(client.get("/api/v1/processing-queue").json()["items"]) == 1
+
+
+def test_speech_model_selection_is_frozen_when_each_run_is_created(
+    tmp_path,
+) -> None:
+    harness = _harness(tmp_path)
+    client = TestClient(create_app(harness.dependencies))
+    client.patch(
+        "/api/v1/settings",
+        json={"manual_processing": True, "speech_model": "indextts25"},
+    )
+
+    first_resolution = client.post(
+        "/api/v1/source-resolutions",
+        json={"url": "https://www.youtube.com/watch?v=useful-000"},
+    ).json()
+    first = client.post(
+        "/api/v1/source-resolutions/"
+        f"{first_resolution['resolution_id']}:import-video"
+    ).json()
+
+    client.patch(
+        "/api/v1/settings",
+        json={"speech_model": "indextts2"},
+    )
+    second_resolution = client.post(
+        "/api/v1/source-resolutions",
+        json={"url": "https://www.youtube.com/watch?v=useful-001"},
+    ).json()
+    second = client.post(
+        "/api/v1/source-resolutions/"
+        f"{second_resolution['resolution_id']}:import-video"
+    ).json()
+
+    with harness.dependencies.database.session() as session:
+        first_run = session.get(
+            ProcessingRunRecord,
+            first["processing_run_id"],
+        )
+        second_run = session.get(
+            ProcessingRunRecord,
+            second["processing_run_id"],
+        )
+        assert first_run is not None
+        assert second_run is not None
+        assert first_run.pipeline_version == SPEECH_PIPELINE_V22
+        assert second_run.pipeline_version == SPEECH_PIPELINE_V21
 
 
 def test_explicit_source_video_import_rejects_channel_only_resolution(tmp_path) -> None:

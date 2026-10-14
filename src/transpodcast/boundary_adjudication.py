@@ -1,32 +1,18 @@
-"""Boundary Ownership Adjudication: the two-judge verdict engine.
+"""Boundary Ownership Adjudication candidates and their acoustic evidence.
 
-Supersedes the retired v7 Speaker Boundary Stabilization rule vocabulary.
-A bounded short-boundary or sparse-label ownership candidate is decided by
-two independent judges supplied through ports:
-
-- the voiceprint judge measures the fragment against each candidate
-  Speaker (TitaNet in production; it abstains when the fragment is too
-  short to measure reliably);
-- the discourse judge reads only the transcript through the Translation
-  Adapter boundary and selects one permissible local Speaker or abstains.
-
-The verdict rule is fixed code with no discretion: agreement applies the
-shared verdict; disagreement adopts the clear discourse verdict and marks the
-segment disputed; when the voiceprint cannot measure, one clear discourse
-verdict may apply alone and is always marked. An explicit discourse
-abstention never changes ownership. Synthesis never waits for the Owner.
-Every outcome is a Decision Record.
+Source Analysis selects bounded short-boundary and sparse-label ownership
+candidates and measures each fragment's voiceprint. Since V15 those disputes
+are evidence for Speaker Ownership Risk Regions; they no longer go to the
+retired V9-V14 two-judge verdict engine. Historical Decision Records written
+by that engine remain stored data only.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
-from typing import Any, Protocol
+from typing import Any
 
-from transpodcast.decision_records import DecisionRecord
-
-LEGACY_ADJUDICATION_POLICY_VERSION = "boundary-ownership-adjudication-v2"
 ADJUDICATION_POLICY_VERSION = "boundary-ownership-adjudication-v3"
 CONTINUITY_ADJUDICATION_POLICY_VERSION = "boundary-ownership-adjudication-v4"
 SHORT_BOUNDARY_TRIGGER = "short-boundary"
@@ -52,7 +38,6 @@ class OwnershipDispute:
     context_after_owner: str = ""
     context_before: tuple[str, ...] = ()
     context_after: tuple[str, ...] = ()
-    question_policy_version: str = ADJUDICATION_POLICY_VERSION
 
     @property
     def start_seconds(self) -> float:
@@ -134,56 +119,6 @@ class VoiceprintVerdict:
                 for label, score in payload["scores"].items()
             },
         )
-
-
-@dataclass(frozen=True)
-class DiscourseVerdict:
-    owner: str | None
-    rationale: str
-
-
-@dataclass(frozen=True)
-class DiscourseAdjudicationResult:
-    """The Translation Adapter's answer to one batched discourse
-    question. An explicit abstention is a DiscourseVerdict whose owner is
-    None; a missing mapping is an incomplete provider answer. Provider
-    identity and usage are retained for the Processing Run audit trail."""
-
-    verdicts: dict[str, DiscourseVerdict | None]
-    input_tokens: int = 0
-    output_tokens: int = 0
-    provider: str = ""
-    model: str = ""
-    cli_version: str = ""
-    error: str | None = None
-
-
-class VoiceprintJudge(Protocol):
-    def measure(
-        self, dispute: OwnershipDispute
-    ) -> VoiceprintVerdict | None:
-        """Return the acoustic verdict, or None to abstain."""
-        ...
-
-
-class DiscourseJudge(Protocol):
-    def judge(
-        self, dispute: OwnershipDispute
-    ) -> DiscourseVerdict | None:
-        """Return the text verdict; owner=None is an explicit `unsure`.
-
-        A missing/provider answer is represented by no verdict.
-        """
-        ...
-
-
-@dataclass(frozen=True)
-class AdjudicationOutcome:
-    dispute_id: str
-    final_owner: str
-    changed: bool
-    disputed_marker: bool
-    record: DecisionRecord
 
 
 def find_ownership_disputes(
@@ -318,141 +253,3 @@ def find_ownership_disputes(
             )
         )
     return normalized
-
-
-def adjudicate_ownership(
-    disputes: list[OwnershipDispute],
-    *,
-    voiceprint_judge: VoiceprintJudge,
-    discourse_judge: DiscourseJudge,
-    policy_version: str = ADJUDICATION_POLICY_VERSION,
-) -> list[AdjudicationOutcome]:
-    outcomes = []
-    for dispute in disputes:
-        outcomes.append(
-            _adjudicate_one(
-                dispute,
-                voiceprint_judge,
-                discourse_judge,
-                policy_version=policy_version,
-            )
-        )
-    return outcomes
-
-
-def _adjudicate_one(
-    dispute: OwnershipDispute,
-    voiceprint_judge: VoiceprintJudge,
-    discourse_judge: DiscourseJudge,
-    *,
-    policy_version: str,
-) -> AdjudicationOutcome:
-    voiceprint = voiceprint_judge.measure(dispute)
-    discourse = discourse_judge.judge(dispute)
-    evidence: dict[str, Any] = {
-        "current_owner": dispute.current_owner,
-        "counterpart": dispute.counterpart,
-        "candidate_owners": list(dispute.permissible_owners),
-        "trigger_reasons": list(dispute.trigger_reasons),
-        "group_id": dispute.group_id or dispute.dispute_id,
-        "discourse_owner": discourse.owner if discourse is not None else None,
-        "discourse_rationale": (
-            discourse.rationale if discourse is not None else None
-        ),
-    }
-    if voiceprint is None:
-        evidence["voiceprint_scores"] = None
-        marker = True
-        if discourse is not None and discourse.owner is not None:
-            # Owner-approved rule (2026-08-01): when the voiceprint
-            # physically cannot measure the fragment, a clear discourse
-            # verdict is adopted alone — always marked for Owner
-            # review, and reversible per segment.
-            final_owner = discourse.owner
-            if final_owner == dispute.current_owner:
-                verdict = "confirmed-by-discourse"
-                rationale = (
-                    "The voiceprint could not measure the fragment; "
-                    "the discourse judge confirmed the current "
-                    "Speaker, marked for Owner review."
-                )
-            else:
-                verdict = "reassigned-by-discourse"
-                rationale = (
-                    "The voiceprint could not measure the fragment; "
-                    "the discourse verdict was adopted alone and the "
-                    "segment is marked for Owner review."
-                )
-        else:
-            final_owner = dispute.current_owner
-            verdict = "kept-voiceprint-abstained"
-            rationale = (
-                "Neither judge could rule, so the original "
-                "assignment stands pending Owner review."
-            )
-    elif discourse is None or discourse.owner is None:
-        # A single vote never changes ownership (the Owner's rule).
-        evidence["voiceprint_scores"] = voiceprint.scores
-        final_owner = dispute.current_owner
-        verdict = "kept-discourse-abstained"
-        marker = True
-        rationale = (
-            "The discourse judge abstained, so only one vote remains "
-            "and the original assignment stands pending Owner review."
-        )
-    else:
-        evidence["voiceprint_scores"] = voiceprint.scores
-        if voiceprint.owner == discourse.owner:
-            final_owner = voiceprint.owner
-            marker = False
-            if final_owner == dispute.current_owner:
-                verdict = "confirmed-by-agreement"
-                rationale = (
-                    "Both judges confirmed the current Speaker."
-                )
-            else:
-                verdict = "reassigned-by-agreement"
-                rationale = (
-                    "Both judges assigned the fragment to the other "
-                    "Speaker."
-                )
-        else:
-            marker = True
-            if policy_version == LEGACY_ADJUDICATION_POLICY_VERSION:
-                final_owner = voiceprint.owner
-                verdict = "voiceprint-preferred"
-                rationale = (
-                    "The judges disagreed; the historical voiceprint "
-                    "verdict was adopted and the segment is marked for "
-                    "Owner review."
-                )
-            else:
-                final_owner = discourse.owner
-                verdict = "discourse-preferred"
-                rationale = (
-                    "The judges disagreed; the discourse verdict was "
-                    "adopted and the segment is marked for Owner review."
-                )
-    evidence["adopted_owner"] = final_owner
-    record = DecisionRecord(
-        kind="ownership-adjudication",
-        policy_version=policy_version,
-        subject={
-            "dispute_id": dispute.dispute_id,
-            "words": [str(word["text"]) for word in dispute.words],
-            "start_seconds": float(
-                dispute.words[0]["start_seconds"]
-            ),
-            "end_seconds": float(dispute.words[-1]["end_seconds"]),
-        },
-        evidence=evidence,
-        verdict=verdict,
-        rationale=rationale,
-    )
-    return AdjudicationOutcome(
-        dispute_id=dispute.dispute_id,
-        final_owner=final_owner,
-        changed=final_owner != dispute.current_owner,
-        disputed_marker=marker,
-        record=record,
-    )

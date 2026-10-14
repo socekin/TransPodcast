@@ -131,6 +131,12 @@ class ProcessingRunRecord(Base):
         nullable=True,
     )
     pipeline_version: Mapped[str] = mapped_column(String(128))
+    # The Agent provider frozen when the run was queued or explicitly
+    # reprocessed; NULL on historical rows, which mean Codex.
+    agent_provider: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
     translation_provider: Mapped[str | None] = mapped_column(
         String(128),
         nullable=True,

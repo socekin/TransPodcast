@@ -62,6 +62,23 @@ def test_quality_gate_allows_safe_final_encoded_true_peak() -> None:
     TransPodcastService._validate_speech(speech, expected_segments=1)
 
 
+def test_quality_gate_counts_hidden_units_separately_from_canonical_timings() -> None:
+    speech = SpeechResult(
+        publication_audio=b"M4A!publication-audio",
+        duration_seconds=60,
+        chapters=((0, "Part 1"),),
+        pipeline_version="transpodcast-modal-pipeline-v15",
+        quality=AudioQualityReport(rendered_segments=2),
+        segment_timings=((0.0, 60.0),),
+    )
+
+    TransPodcastService._validate_speech(
+        speech,
+        expected_segments=1,
+        expected_rendered_segments=2,
+    )
+
+
 def test_quality_gate_rejects_final_encoded_true_peak_without_headroom() -> None:
     speech = SpeechResult(
         publication_audio=b"M4A!publication-audio",

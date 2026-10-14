@@ -326,6 +326,101 @@
   font-variant-numeric: tabular-nums;
 }
 
+.run-analysis-flow {
+  margin-top: 11px;
+  border: 1px solid oklch(0.9 0.03 250);
+  border-radius: 12px;
+  padding: 10px;
+  background: oklch(0.985 0.008 250);
+}
+
+.run-analysis-flow.is-degraded {
+  border-color: var(--warning-border, oklch(0.82 0.09 80));
+  background: var(--warning-soft);
+}
+
+.run-analysis-flow-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.run-analysis-flow-heading > strong {
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.run-analysis-flow-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: oklch(0.42 0.09 70);
+  font-size: 8px;
+}
+
+.run-analysis-flow ol {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-analysis-flow li {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  background: white;
+}
+
+.run-analysis-flow li + li::before {
+  position: absolute;
+  top: 50%;
+  left: -7px;
+  width: 7px;
+  height: 1px;
+  background: var(--border);
+  content: "";
+}
+
+.run-analysis-flow-index {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.run-analysis-flow li strong,
+.run-analysis-flow li small {
+  display: block;
+}
+
+.run-analysis-flow li strong {
+  font-size: 9px;
+  font-weight: 630;
+}
+
+.run-analysis-flow li small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
 .run-technical-details {
   margin-top: 8px;
 }
@@ -659,6 +754,17 @@
   .run-step-progress {
     grid-template-columns: 1fr;
     gap: 5px;
+  }
+
+  .run-analysis-flow ol {
+    grid-template-columns: 1fr;
+  }
+
+  .run-analysis-flow li + li::before {
+    top: -7px;
+    left: 18px;
+    width: 1px;
+    height: 7px;
   }
 
   .run-attempt-details {

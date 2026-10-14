@@ -3,6 +3,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export type PipelineTechnicalEvidenceResponse = {
+  cli_version?: (string | null);
   modal_account?: (string | null);
   modal_route?: Array<string>;
   model: (string | Array<string> | null);

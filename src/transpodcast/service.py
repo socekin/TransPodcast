@@ -22,10 +22,15 @@ from uuid import uuid4
 from sqlalchemy import and_, delete, exists, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from transpodcast.adapters.agent import (
+    AGENT_PROVIDERS,
+    DEFAULT_AGENT_PROVIDER,
+    AgentInvocationError,
+    provider_identity,
+)
 from transpodcast.adjudication_completion import (
     AdjudicationCompletion,
     complete_boundary_adjudication,
-    supports_speaker_tail_repair,
 )
 from transpodcast.artifacts import persist_structured_artifact
 from transpodcast.artwork import (
@@ -41,7 +46,7 @@ from transpodcast.content_editing import (
     content_edit_for_segment,
 )
 from transpodcast.decision_records import DecisionLedger, DecisionRecord
-from transpodcast.dependencies import AppDependencies
+from transpodcast.dependencies import AppDependencies, TranslationAdapter
 from transpodcast.domain import (
     AnalyzedSpeaker,
     AudioQualityReport,
@@ -80,10 +85,18 @@ from transpodcast.errors import (
     SpendGuardrailReached,
     TransientProviderError,
     TranslationProviderError,
+    TranslationProviderMismatchError,
     TranslationStalledError,
 )
 from transpodcast.feed import FeedItem, render_private_feed
 from transpodcast.i18n import zh_cn
+from transpodcast.listening_audit_gate import (
+    ListeningAuditVerdict,
+    acknowledge_listening_audit,
+    findings_by_segment,
+    listening_audit_summary,
+    listening_audit_verdict,
+)
 from transpodcast.maintenance import MaintenanceManager
 from transpodcast.models import (
     CandidateVideoRecord,
@@ -113,9 +126,12 @@ from transpodcast.models import (
     TranscriptRevisionJobRecord,
 )
 from transpodcast.pipeline_versions import (
-    CURRENT_SPEECH_PIPELINE_VERSION,
-    SPEECH_PIPELINE_V13,
-    SPEECH_PIPELINE_V14,
+    RHYTHM_PIPELINES,
+    SPEECH_MODEL_INDEXTTS2,
+    SUPPORTED_SPEECH_MODELS,
+    WORD_OWNERSHIP_PIPELINES,
+    analysis_version_for_pipeline,
+    pipeline_version_for_speech_model,
 )
 from transpodcast.publication_container import (
     PublicationChapter,
@@ -132,10 +148,12 @@ from transpodcast.publication_metadata import (
 from transpodcast.similarity import cosine_similarity
 from transpodcast.transcript import canonical_caption_segments
 from transpodcast.translation_projects import (
+    allow_translation_project_provider_rebind,
     mark_translation_project_reprocess,
     read_translation_project,
     reset_translation_project,
 )
+from transpodcast.voice_references import apply_owned_voice_references
 
 _DISCOVERY_SCHEDULE_KEY = "discovery_schedule_v1"
 _DISCOVERY_LEASE_HOURS = 2
@@ -144,6 +162,14 @@ _DISCOVERY_RETRY_MINUTES = 15
 _TRUE_PEAK_GATE_MAX_DBTP = -1.0
 _LOUDNESS_GATE_MIN_LUFS = -16.5
 _LOUDNESS_GATE_MAX_LUFS = -15.5
+# The bitrate is the measured average of the encoded file (ffprobe). The
+# encoder targets 128 kbps but spends about 2 kbps on digital silence, so
+# speech with pauses measures lower: recorded episodes measured 117-125
+# kbps and a Rhythm Policy candidate 116 kbps. Historical renders recorded a literal
+# 128. The window still rejects a wrong encoder tier (64 or 192 kbps).
+_BITRATE_GATE_MIN_KBPS = 96
+_BITRATE_GATE_MAX_KBPS = 136
+_QUALITY_GATE_VERSION = "publication-audio-quality-v2"
 
 _RESOLUTION_TTL = timedelta(minutes=15)
 _RECENT_VIDEOS_TTL = timedelta(minutes=10)
@@ -319,6 +345,9 @@ _OWNER_PIPELINE_STEPS = (
 )
 
 _SAFE_PROVIDER_ERROR_SUMMARIES = {
+    "agent_auth": (
+        "The Agent CLI is not signed in on the TransPodcast host; sign in and retry."
+    ),
     "analysis_provider": "Source analysis provider did not complete.",
     "mastering_provider": "Publication Audio mastering did not complete.",
     "source_provider": "Source media provider did not complete.",
@@ -328,6 +357,10 @@ _SAFE_PROVIDER_ERROR_SUMMARIES = {
         "A provider remained unavailable after automatic retries."
     ),
     "translation_provider": "Translation provider did not complete.",
+    "translation_provider_mismatch": (
+        "The Translation Project belongs to another Agent provider; "
+        "reprocess the episode to start fresh sessions."
+    ),
 }
 _UNSAFE_ERROR_MARKERS = (
     "traceback",
@@ -365,6 +398,15 @@ def _safe_error_summary(kind: str | None, summary: str | None) -> str | None:
     if unsafe:
         return "Processing stopped; technical details were redacted."
     return normalized[:320]
+
+
+def _stage_cli_version(usage: Mapping[str, Any]) -> str | None:
+    """The recorded Agent CLI version, including historical Codex keys."""
+    for key in ("cli_version", "codex_cli_version", "discourse_cli_version"):
+        value = usage.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _json_mapping(value: str | None) -> dict[str, Any]:
@@ -694,6 +736,18 @@ def _pipeline_steps(
             usage = _json_mapping(stage.usage_json)
             segments = analysis.get("segments", [])
             speakers = analysis.get("speakers", [])
+            adjudication = analysis.get("boundary_adjudication", {})
+            if not isinstance(adjudication, dict):
+                adjudication = {}
+            ownership = (
+                adjudication.get("speaker_ownership_continuity")
+                or adjudication.get("speaker_ownership_v15")
+            )
+            if not isinstance(ownership, dict):
+                ownership = {}
+            natural_segmentation = ownership.get("natural_segmentation")
+            if not isinstance(natural_segmentation, dict):
+                natural_segmentation = {}
             used_speaker_labels = (
                 {
                     str(item.get("speaker_label"))
@@ -716,6 +770,31 @@ def _pipeline_steps(
                 "call_seconds": usage.get("call_seconds"),
                 "estimated_cost_usd": usage.get("estimated_cost_usd"),
             }
+            if ownership:
+                metrics.update(
+                    {
+                        "ownership_region_count": ownership.get(
+                            "region_count"
+                        ),
+                        "ownership_changed_word_count": ownership.get(
+                            "changed_word_count"
+                        ),
+                        "ownership_disputed_region_count": ownership.get(
+                            "disputed_region_count"
+                        ),
+                        "natural_segment_count": natural_segmentation.get(
+                            "segment_count"
+                        ),
+                        "fallback_boundary_count": (
+                            natural_segmentation.get(
+                                "fallback_boundary_count"
+                            )
+                        ),
+                        "ownership_degraded": bool(
+                            ownership.get("degraded_errors")
+                        ),
+                    }
+                )
         elif step_id == "voice_render" and stage is not None:
             usage = _json_mapping(stage.usage_json)
             evidence_available = True
@@ -724,6 +803,34 @@ def _pipeline_steps(
                 "output_bytes": usage.get("audio_bytes"),
                 "estimated_cost_usd": usage.get("estimated_cost_usd"),
             }
+            render_settings = usage.get("render_settings")
+            if isinstance(render_settings, dict) and render_settings.get(
+                "pronunciation_policy_version"
+            ):
+                metrics.update(
+                    {
+                        "pronunciation_policy_version": (
+                            render_settings.get(
+                                "pronunciation_policy_version"
+                            )
+                        ),
+                        "pronunciation_annotation_count": (
+                            render_settings.get(
+                                "pronunciation_annotation_count"
+                            )
+                        ),
+                        "pronunciation_fallback_count": (
+                            render_settings.get(
+                                "pronunciation_fallback_count"
+                            )
+                        ),
+                        "chinese_replacement_count": (
+                            render_settings.get(
+                                "chinese_replacement_count"
+                            )
+                        ),
+                    }
+                )
         elif step_id == "publication_audio_quality" and render:
             evidence_available = True
             metrics = {
@@ -739,6 +846,12 @@ def _pipeline_steps(
                     "source_language_leakage"
                 ),
             }
+            audit = listening_audit_verdict(
+                str(render.get("pipeline_version") or ""),
+                str(render.get("render_settings_json") or "{}"),
+            )
+            if audit is not None:
+                metrics["listening_audit"] = listening_audit_summary(audit)
         technical_evidence: dict[str, object] | None = None
         if stage is not None:
             stage_usage = _json_mapping(stage.usage_json)
@@ -765,16 +878,20 @@ def _pipeline_steps(
                     if step_id == "source_analysis"
                     else None
                 ),
+                "cli_version": _stage_cli_version(stage_usage),
             }
         elif step_id.startswith("translation_") and project:
             technical_evidence = {
                 "version": project.get("policy_version"),
-                "provider": "codex-cli",
+                "provider": provider_identity(
+                    str(project.get("provider") or "") or None
+                ),
                 "model": (
                     project.get("author_models")
                     if step_id == "translation_authoring"
                     else project.get("reviewer_models")
                 ),
+                "cli_version": str(project.get("cli_version") or "") or None,
             }
         elif (
             step_id == "publication_audio_quality"
@@ -927,9 +1044,10 @@ class TransPodcastService:
                 session.scalar(select(SourceChannelRecord.id).limit(1))
                 is not None
             )
+        agent = self.agent_readiness()
         services = {
             "youtube": self.dependencies.source.readiness(),
-            "codex": self.dependencies.translation.readiness(),
+            "agent": bool(agent["ready"]),
             "modal": (
                 self.dependencies.speech.readiness()
                 and (
@@ -941,20 +1059,31 @@ class TransPodcastService:
             "telegram": self.dependencies.notifications.readiness(),
             "private_feed": len(self.current_feed_token()) >= 32,
             "source_channel": has_source_channel,
+            "listening_audit": (
+                self.dependencies.speech.listening_audit_readiness()
+            ),
         }
         impacts = {
             "youtube": "Source Channel resolution and discovery are unavailable.",
-            "codex": "Complete Mandarin translation cannot run.",
+            "agent": (
+                "The selected Agent provider cannot run translation, "
+                "Speaker ownership review, or triage."
+            ),
             "modal": "IndexTTS2 rendering cannot run.",
             "cloudflare": "Private Preview and publication storage are unavailable.",
             "telegram": "Owner decisions cannot be delivered to the iPhone.",
             "private_feed": "Apple Podcasts has no protected subscription URL.",
             "source_channel": "There is no Source Channel to monitor.",
+            "listening_audit": (
+                "V19/V20 renders record audit_unavailable instead of "
+                "Listening Audit findings; publication is not blocked."
+            ),
         }
+        optional_services = {"telegram", "listening_audit"}
         required_services = {
             name: configured
             for name, configured in services.items()
-            if name != "telegram"
+            if name not in optional_services
         }
         return {
             "ready": all(required_services.values()),
@@ -963,10 +1092,38 @@ class TransPodcastService:
                 name: {
                     "configured": configured,
                     "impact": "" if configured else impacts[name],
-                    "optional": name == "telegram",
+                    "optional": name in optional_services,
                 }
                 for name, configured in services.items()
             },
+            "agent": agent,
+        }
+
+    def agent_readiness(self) -> dict[str, object]:
+        """The selected Agent provider and the status of every CLI."""
+        with self.dependencies.database.session() as session:
+            selected = self._agent_provider(session)
+        configured = self.dependencies.configured_agent_providers()
+        providers: dict[str, dict[str, object]] = {}
+        for provider in AGENT_PROVIDERS:
+            status: dict[str, object] = {
+                "configured": provider in configured,
+                "ready": False,
+                "identity": provider_identity(provider),
+                "cli_version": "",
+                "auth_method": "",
+            }
+            if provider in configured:
+                status.update(
+                    _agent_provider_status(
+                        self.dependencies.translation_for(provider)
+                    )
+                )
+            providers[provider] = status
+        return {
+            "provider": selected,
+            "ready": bool(providers[selected]["ready"]),
+            "providers": providers,
         }
 
     def ensure_publication_assets(self) -> None:
@@ -1906,7 +2063,10 @@ class TransPodcastService:
             ),
             stage="ingest",
             priority=priority,
-            pipeline_version="transpodcast-v1",
+            pipeline_version=pipeline_version_for_speech_model(
+                self._speech_model(session)
+            ),
+            agent_provider=self._agent_provider(session),
             started_at=self.dependencies.clock.now(),
         )
         session.add(run)
@@ -1925,6 +2085,40 @@ class TransPodcastService:
         if row is None:
             return bool(_default_settings()["manual_processing"])
         return bool(json.loads(row.value_json))
+
+    def _agent_provider(self, session: Session) -> str:
+        """The currently selected Agent provider setting."""
+        row = session.get(SettingRecord, "agent_provider")
+        value = (
+            str(json.loads(row.value_json))
+            if row is not None
+            else str(_default_settings()["agent_provider"])
+        )
+        if value not in AGENT_PROVIDERS:
+            return DEFAULT_AGENT_PROVIDER
+        return value
+
+    def _current_agent_provider(self) -> str:
+        with self.dependencies.database.session() as session:
+            return self._agent_provider(session)
+
+    def _translation_for_run(
+        self,
+        run: ProcessingRunRecord,
+    ) -> TranslationAdapter:
+        """Every Agent call of a run uses the run's frozen provider."""
+        return self.dependencies.translation_for(run.agent_provider)
+
+    def _speech_model(self, session: Session) -> str:
+        row = session.get(SettingRecord, "speech_model")
+        value = (
+            str(json.loads(row.value_json))
+            if row is not None
+            else str(_default_settings()["speech_model"])
+        )
+        if value not in SUPPORTED_SPEECH_MODELS:
+            return SPEECH_MODEL_INDEXTTS2
+        return value
 
     def processing_queue(self) -> list[dict[str, object]]:
         with self.dependencies.database.session() as session:
@@ -2153,7 +2347,9 @@ class TransPodcastService:
                 rationale="Available Triage Evidence is insufficient.",
                 matched_interests=(),
             )
-        return self.dependencies.triage.evaluate(
+        return self.dependencies.triage_for(
+            self._current_agent_provider()
+        ).evaluate(
             candidate,
             self._triage_context(),
         )
@@ -2378,6 +2574,7 @@ class TransPodcastService:
                 captions=candidate.captions,
                 analysis_json=run.analysis_json,
                 processing_run_id=run.id,
+                speech_pipeline_version=run.pipeline_version,
             )
             if run.source_archive_key is None:
                 source_archive_attempt = self._begin_stage_attempt(
@@ -2603,6 +2800,16 @@ class TransPodcastService:
                         session,
                         run,
                         analysis,
+                        archive,
+                    )
+                except AgentInvocationError as error:
+                    return self._handle_agent_failure(
+                        run,
+                        candidate,
+                        error.kind,
+                        "adjudication_completion",
+                        f"{type(error).__name__}: {error}"[:500],
+                        duration_ms=_elapsed_ms(stage_started),
                     )
                 except Exception as error:
                     return self._fail_processing_run(
@@ -2613,6 +2820,11 @@ class TransPodcastService:
                         duration_ms=_elapsed_ms(stage_started),
                     )
                 analysis = completion.analysis
+                if run.pipeline_version in RHYTHM_PIPELINES:
+                    # B1/B2: Voice References come from final word owners
+                    # and the full-band Source Archive before Speaker
+                    # Registry matching stores a provisional candidate.
+                    analysis = apply_owned_voice_references(analysis, archive)
                 try:
                     analysis = self._resolve_analysis_speakers(
                         session,
@@ -2775,7 +2987,7 @@ class TransPodcastService:
                 session.commit()
                 stage_started = time.monotonic()
                 try:
-                    translation = self.dependencies.translation.translate(
+                    translation = self._translation_for_run(run).translate(
                         source
                     )
                 except TranslationStalledError as error:
@@ -2793,10 +3005,21 @@ class TransPodcastService:
                     run.input_tokens = error.input_tokens
                     run.output_tokens = error.output_tokens
                     self._sync_translation_project_activity(session, run)
+                    return self._handle_agent_failure(
+                        run,
+                        candidate,
+                        error.kind,
+                        "translation_provider",
+                        str(error),
+                        duration_ms=_elapsed_ms(stage_started),
+                    )
+                except TranslationProviderMismatchError as error:
+                    self._restore_translation_usage(run)
+                    self._sync_translation_project_activity(session, run)
                     return self._fail_processing_run(
                         run,
                         candidate,
-                        "translation_provider",
+                        "translation_provider_mismatch",
                         str(error),
                         duration_ms=_elapsed_ms(stage_started),
                     )
@@ -2807,6 +3030,17 @@ class TransPodcastService:
                         run,
                         candidate,
                         "translation_schema",
+                        str(error),
+                        duration_ms=_elapsed_ms(stage_started),
+                    )
+                except AgentInvocationError as error:
+                    self._restore_translation_usage(run)
+                    self._sync_translation_project_activity(session, run)
+                    return self._handle_agent_failure(
+                        run,
+                        candidate,
+                        error.kind,
+                        "translation_provider",
                         str(error),
                         duration_ms=_elapsed_ms(stage_started),
                     )
@@ -2852,7 +3086,9 @@ class TransPodcastService:
                         "elapsed_ms": translation.elapsed_ms,
                         "reviewed": translation.reviewed,
                         "review_model": translation.review_model,
-                        "codex_cli_version": translation.cli_version,
+                        "agent_provider": run.agent_provider
+                        or DEFAULT_AGENT_PROVIDER,
+                        "cli_version": translation.cli_version,
                         "content_edit_policy_version": (
                             CONTENT_EDIT_POLICY_VERSION
                         ),
@@ -3051,7 +3287,7 @@ class TransPodcastService:
                     stage="render",
                     version=speech.pipeline_version,
                     provider="modal",
-                    model="IndexTTS2",
+                    model=speech.render_model or "IndexTTS2",
                     input_hash=_render_plan_input_hash(
                         translation,
                         render_plan,
@@ -3063,6 +3299,13 @@ class TransPodcastService:
                             speech.quality.rendered_segments
                         ),
                         "audio_bytes": len(speech.publication_audio),
+                        "render_model_revision": (
+                            speech.render_model_revision
+                        ),
+                        "render_code_commit": speech.render_code_commit,
+                        "render_settings": _json_mapping(
+                            speech.render_settings_json
+                        ),
                     },
                     duration_ms=stage_duration,
                 )
@@ -3095,6 +3338,9 @@ class TransPodcastService:
                 self._validate_speech(
                     speech,
                     len(render_translation.segments),
+                    expected_rendered_segments=_rendered_unit_count(
+                        render_plan
+                    ),
                 )
             except ValueError as error:
                 self._record_attempt(
@@ -3122,9 +3368,41 @@ class TransPodcastService:
                     "processing_state": run.status,
                     "error_kind": run.error_kind,
                 }
+            audit_verdict = listening_audit_verdict(
+                speech.pipeline_version,
+                speech.render_settings_json,
+            )
+            if audit_verdict is not None and audit_verdict.blocks_publication:
+                summary = audit_verdict.review_summary()
+                self._record_attempt(
+                    run,
+                    status="failed",
+                    duration_ms=_elapsed_ms(stage_started),
+                    error_kind="listening_audit",
+                    error_summary=summary,
+                )
+                run.status = "review_queue"
+                run.error_kind = "listening_audit"
+                run.error_summary = summary
+                run.lease_expires_at = None
+                if self._notification_enabled("processing_failure"):
+                    self.dependencies.notifications.send(
+                        OwnerNotification(
+                            kind="processing_failure",
+                            title=candidate.title,
+                            body=summary,
+                            actions=(),
+                        )
+                    )
+                return {
+                    "processing_run_id": run.id,
+                    "processing_state": run.status,
+                    "error_kind": run.error_kind,
+                }
             quality_json = _serialize_quality(
                 speech,
-                len(render_translation.segments),
+                _rendered_unit_count(render_plan),
+                audit=audit_verdict,
             )
             stage_duration = _elapsed_ms(stage_started)
             self._record_attempt(
@@ -3136,7 +3414,7 @@ class TransPodcastService:
                 session,
                 run,
                 stage="quality_gate",
-                version="publication-audio-quality-v1",
+                version=_QUALITY_GATE_VERSION,
                 provider=None,
                 model=None,
                 input_hash=audio_hash,
@@ -4076,6 +4354,42 @@ class TransPodcastService:
             "error_kind": run.error_kind,
         }
 
+    def _handle_agent_failure(
+        self,
+        run: ProcessingRunRecord,
+        candidate: CandidateVideoRecord,
+        kind: str | None,
+        error_kind: str,
+        summary: str,
+        *,
+        duration_ms: int = 0,
+    ) -> dict[str, object]:
+        """Route a classified Agent failure to the matching policy.
+
+        A rate limit is transient and uses the Retry Policy; a lost login
+        cannot heal by waiting and surfaces immediately as ``agent_auth``;
+        a schema failure is a structural failure; anything else keeps the
+        stage's provider error kind.
+        """
+        if kind == "rate_limit":
+            return self._schedule_transient_retry(
+                run,
+                candidate,
+                summary,
+                duration_ms=duration_ms,
+            )
+        if kind == "auth":
+            error_kind = "agent_auth"
+        elif kind == "schema" and error_kind == "translation_provider":
+            error_kind = "translation_schema"
+        return self._fail_processing_run(
+            run,
+            candidate,
+            error_kind,
+            summary,
+            duration_ms=duration_ms,
+        )
+
     def _schedule_transient_retry(
         self,
         run: ProcessingRunRecord,
@@ -4376,15 +4690,23 @@ class TransPodcastService:
                             expected_segments = len(
                                 render_plan.translation.segments
                             )
+                            expected_rendered_segments = (
+                                _rendered_unit_count(render_plan)
+                            )
                         else:
                             expected_segments = 0
+                            expected_rendered_segments = 0
                     else:
                         expected_segments = len(translation.segments)
+                        expected_rendered_segments = expected_segments
                     if checkpoint_matches:
                         try:
                             self._validate_speech(
                                 speech,
                                 expected_segments,
+                                expected_rendered_segments=(
+                                    expected_rendered_segments
+                                ),
                             )
                         except ValueError:
                             repair_mastering = _is_publication_audio(
@@ -4392,6 +4714,29 @@ class TransPodcastService:
                             )
                         else:
                             preserve_render = True
+            if (
+                run.error_kind == "listening_audit"
+                and run.render_json is not None
+                and run.render_preview_key is not None
+            ):
+                # The Review Queue decision for D3: listening is the Owner's
+                # call, so continuing keeps the render and lists the
+                # remaining findings on the Publication Queue item.
+                run.render_json = acknowledge_listening_audit(
+                    run.render_json,
+                    self.dependencies.clock.now(),
+                )
+                self._record_activity(
+                    session,
+                    run,
+                    kind="listening_audit_acknowledged",
+                    stage="quality_gate",
+                    summary=(
+                        "The Owner continued past the remaining Listening "
+                        "Audit hard findings."
+                    ),
+                    metadata={"error_summary": run.error_summary or ""},
+                )
             if repair_mastering:
                 run.stage = "mastering_repair"
             if (
@@ -4679,8 +5024,23 @@ class TransPodcastService:
             "operational_log_max_mb": 500,
             "recovery_window_days": 30,
         }
+        agent = self.agent_readiness()
+        agent_providers = cast(dict[str, dict[str, object]], agent["providers"])
         return {
             "automation": automation,
+            "speech": {
+                "model": values.get(
+                    "speech_model",
+                    defaults["speech_model"],
+                ),
+            },
+            "agent": {
+                "provider": agent["provider"],
+                "readiness": {
+                    provider: _readiness_label(bool(status["ready"]))
+                    for provider, status in agent_providers.items()
+                },
+            },
             "retention": retention,
             "notifications": values.get(
                 "notification_preferences",
@@ -4693,9 +5053,7 @@ class TransPodcastService:
                 "authority": "modal_environment",
             },
             "secrets": {
-                "codex": _readiness_label(
-                    self.dependencies.translation.readiness()
-                ),
+                "agent": _readiness_label(bool(agent["ready"])),
                 "modal": _readiness_label(
                     self.dependencies.speech.readiness()
                 ),
@@ -4831,6 +5189,15 @@ class TransPodcastService:
             raise ValueError(
                 "Unsupported settings: " + ", ".join(sorted(unknown))
             )
+        speech_model = updates.get("speech_model")
+        if (
+            speech_model is not None
+            and speech_model not in SUPPORTED_SPEECH_MODELS
+        ):
+            raise ValueError(f"Unsupported speech model: {speech_model}")
+        agent_provider = updates.get("agent_provider")
+        if agent_provider is not None and agent_provider not in AGENT_PROVIDERS:
+            raise ValueError(f"Unsupported Agent provider: {agent_provider}")
         with self.dependencies.database.session() as session:
             for key, value in updates.items():
                 row = session.get(SettingRecord, key)
@@ -5421,6 +5788,8 @@ class TransPodcastService:
     def _validate_speech(
         speech: SpeechResult,
         expected_segments: int,
+        *,
+        expected_rendered_segments: int | None = None,
     ) -> None:
         content = speech.publication_audio
         quality = speech.quality
@@ -5444,6 +5813,11 @@ class TransPodcastService:
                 )
             )
         )
+        rendered_segment_count = (
+            expected_rendered_segments
+            if expected_rendered_segments is not None
+            else expected_segments
+        )
         valid = (
             len(content) >= 8
             and _is_publication_audio(content)
@@ -5451,7 +5825,9 @@ class TransPodcastService:
             and quality.codec == "AAC-LC"
             and quality.sample_rate_hz == 48_000
             and quality.channels == 2
-            and 120 <= quality.bitrate_kbps <= 136
+            and _BITRATE_GATE_MIN_KBPS
+            <= quality.bitrate_kbps
+            <= _BITRATE_GATE_MAX_KBPS
             and (
                 _LOUDNESS_GATE_MIN_LUFS
                 <= quality.loudness_lufs
@@ -5459,11 +5835,13 @@ class TransPodcastService:
             )
             and quality.true_peak_dbtp <= _TRUE_PEAK_GATE_MAX_DBTP
             and not quality.clipping
-            and quality.rendered_segments == expected_segments
+            and quality.rendered_segments == rendered_segment_count
             and timings_valid
             and quality.timeline_continuous
-            and not quality.boundary_artifacts
-            and not quality.source_language_leakage
+            # Historical renders recorded literal flags; ``None`` is not
+            # measured. Source Language Leakage is a soft Listening Audit
+            # finding (D3) and never blocks on its own.
+            and quality.boundary_artifacts is not True
         )
         if not valid:
             raise ValueError("Publication Audio failed deterministic checks")
@@ -5739,12 +6117,21 @@ class TransPodcastService:
                 .order_by(ProcessingStageRecord.id.desc())
                 .limit(1)
             )
+            selected_pipeline_version = pipeline_version_for_speech_model(
+                self._speech_model(session)
+            )
+            # Speech Pipelines share Source Analysis versions (V19/V20 use
+            # V17 analysis), so reuse compares analysis versions.
             reusable_analysis = bool(
                 analysis_stage is not None
                 and analysis_stage.version == checkpoint_analysis.pipeline_version
                 and checkpoint_analysis.pipeline_version
-                == CURRENT_SPEECH_PIPELINE_VERSION
+                == analysis_version_for_pipeline(selected_pipeline_version)
             )
+            previous_agent_provider = (
+                run.agent_provider or DEFAULT_AGENT_PROVIDER
+            )
+            selected_agent_provider = self._agent_provider(session)
             preserved_stages = (
                 ("source_archive", "source_analysis")
                 if reusable_analysis
@@ -5763,6 +6150,12 @@ class TransPodcastService:
                 run.content_edit_json,
             )
             if reusable_analysis:
+                # The explicit reprocess re-reads the Agent provider; the
+                # reused project must start fresh sessions if it changed.
+                allow_translation_project_provider_rebind(
+                    self.dependencies.artifact_root,
+                    run.id,
+                )
                 mark_translation_project_reprocess(
                     self.dependencies.artifact_root,
                     run.id,
@@ -5786,8 +6179,9 @@ class TransPodcastService:
             run.input_tokens = 0
             run.output_tokens = 0
             run.estimated_cost_usd = 0.0
+            run.pipeline_version = selected_pipeline_version
+            run.agent_provider = selected_agent_provider
             if not reusable_analysis:
-                run.pipeline_version = "pending-current-pipeline"
                 run.analysis_json = None
             run.translation_json = None
             run.content_edit_json = None
@@ -5811,6 +6205,9 @@ class TransPodcastService:
                 ),
                 metadata={
                     "previous_pipeline_version": previous_pipeline_version,
+                    "selected_pipeline_version": selected_pipeline_version,
+                    "previous_agent_provider": previous_agent_provider,
+                    "selected_agent_provider": selected_agent_provider,
                     "previous_input_tokens": previous_input_tokens,
                     "previous_output_tokens": previous_output_tokens,
                     "previous_estimated_cost_usd": (
@@ -6045,11 +6442,11 @@ class TransPodcastService:
                     )
                 except ValueError:
                     started = time.monotonic()
-                    generated = (
-                        self.dependencies.translation.publication_metadata(
-                            source,
-                            translation,
-                        )
+                    generated = self._translation_for_run(
+                        run
+                    ).publication_metadata(
+                        source,
+                        translation,
                     )
                     run.publication_metadata_json = generated.artifact_json
                     metadata = parse_publication_metadata(
@@ -6464,6 +6861,15 @@ class TransPodcastService:
                 (float(item[0]), float(item[1]))
                 for item in render.get("segment_timings", [])
             ]
+            listening_audit = listening_audit_verdict(
+                str(render.get("pipeline_version") or ""),
+                str(render.get("render_settings_json") or "{}"),
+            )
+            audit_findings = (
+                findings_by_segment(listening_audit.payload)
+                if listening_audit is not None
+                else {}
+            )
             rows = {
                 row.ordinal: row
                 for row in session.scalars(
@@ -6490,6 +6896,12 @@ class TransPodcastService:
                 analysis.get("speaker_consolidation") or {}
             )
             adjudication = analysis.get("boundary_adjudication") or {}
+            speaker_ownership_summary = (
+                adjudication.get("speaker_ownership_continuity")
+                or adjudication.get("speaker_ownership_v15")
+            )
+            if not isinstance(speaker_ownership_summary, dict):
+                speaker_ownership_summary = {}
             adjudication_records = (
                 adjudication.get("decision_records") or []
             )
@@ -6547,6 +6959,8 @@ class TransPodcastService:
                         "tail-shifted",
                         "split-to-next-applied",
                         "whole-reassignment-applied",
+                        "applied-confirmed",
+                        "applied-disputed",
                     }
                 ):
                     status = "auto_corrected"
@@ -6610,6 +7024,11 @@ class TransPodcastService:
                                 record,
                                 registry_by_label,
                                 speaker_rows,
+                                segment_start_seconds=start,
+                                segment_end_seconds=end,
+                                current_speaker_label=str(
+                                    segment.get("speaker_label", "")
+                                ),
                             )
                             if record is not None
                             else None
@@ -6617,6 +7036,16 @@ class TransPodcastService:
                         "content_edit": content_edit_for_segment(
                             render_plan,
                             canonical_segment,
+                        ),
+                        **(
+                            {
+                                "listening_audit_findings": audit_findings.get(
+                                    canonical_segment.segment_id,
+                                    [],
+                                )
+                            }
+                            if listening_audit is not None
+                            else {}
                         ),
                     }
                 )
@@ -6723,6 +7152,47 @@ class TransPodcastService:
                         else {}
                     ),
                 },
+                "speaker_ownership_v15": (
+                    {
+                        "policy_version": str(
+                            speaker_ownership_summary.get(
+                                "policy_version", ""
+                            )
+                        ),
+                        "region_count": int(
+                            speaker_ownership_summary.get("region_count", 0)
+                        ),
+                        "changed_word_count": int(
+                            speaker_ownership_summary.get(
+                                "changed_word_count", 0
+                            )
+                        ),
+                        "disputed_region_count": int(
+                            speaker_ownership_summary.get(
+                                "disputed_region_count", 0
+                            )
+                        ),
+                        "possible_missing_speech_count": int(
+                            speaker_ownership_summary.get(
+                                "possible_missing_speech_count", 0
+                            )
+                        ),
+                        "batch_count": int(
+                            speaker_ownership_summary.get("batch_count", 0)
+                        ),
+                        "natural_segmentation": dict(
+                            speaker_ownership_summary.get(
+                                "natural_segmentation"
+                            )
+                            or {}
+                        ),
+                        "degraded": bool(
+                            speaker_ownership_summary.get("degraded_errors")
+                        ),
+                    }
+                    if speaker_ownership_summary
+                    else None
+                ),
                 "speaker_mapping": (
                     consolidation.get("speaker_mapping") or {}
                 ),
@@ -6747,6 +7217,10 @@ class TransPodcastService:
                     ),
                 },
             }
+            if listening_audit is not None:
+                summary["listening_audit"] = listening_audit_summary(
+                    listening_audit
+                )
             return {
                 "episode_id": episode.id,
                 "processing_run_id": run.id,
@@ -6793,6 +7267,61 @@ class TransPodcastService:
                 raise ValueError(
                     "This segment is not awaiting a ruling"
                 )
+            segment_start_seconds = float(str(segment["start_seconds"]))
+            segment_end_seconds = float(str(segment["end_seconds"]))
+            if action == "overturn":
+                adjudication = payload.get("boundary_adjudication")
+                records = (
+                    adjudication.get("decision_records") or []
+                    if isinstance(adjudication, dict)
+                    else []
+                )
+                record = _matching_adjudication_record(
+                    [item for item in records if isinstance(item, dict)],
+                    segment_start_seconds,
+                    segment_end_seconds,
+                    str(segment.get("segment_id", "")),
+                )
+                if payload.get("pipeline_version") in WORD_OWNERSHIP_PIPELINES:
+                    if (
+                        record is None
+                        or record.get("kind")
+                        != "speaker-ownership-adjudication"
+                    ):
+                        raise ValueError(
+                            "This V15 ownership change has no safe whole-segment "
+                            "overturn"
+                        )
+                    evidence = record.get("evidence")
+                    safe_label = (
+                        _v15_counterpart_label(
+                            evidence,
+                            segment_start_seconds=segment_start_seconds,
+                            segment_end_seconds=segment_end_seconds,
+                            current_speaker_label=str(
+                                segment.get("speaker_label", "")
+                            ),
+                        )
+                        if isinstance(evidence, dict)
+                        else ""
+                    )
+                    safe_speaker_id = next(
+                        (
+                            item.get("registry_speaker_id")
+                            for item in payload.get("speakers") or []
+                            if isinstance(item, dict)
+                            and item.get("local_label") == safe_label
+                        ),
+                        None,
+                    )
+                    if (
+                        not isinstance(safe_speaker_id, int)
+                        or safe_speaker_id != speaker_id
+                    ):
+                        raise ValueError(
+                            "This V15 ownership change cannot be safely "
+                            "overturned as a whole segment"
+                        )
             target_text = None
             if action == "overturn":
                 row = session.scalar(
@@ -7364,142 +7893,78 @@ class TransPodcastService:
         session: Session,
         run: ProcessingRunRecord,
         analysis: SourceAnalysisResult,
+        archive: SourceArchive,
     ) -> AdjudicationCompletion:
-        """Complete discourse adjudication after its acoustic checkpoint.
+        """Complete Speaker ownership after its acoustic checkpoint.
 
         Provider, checkpoint, and application failures preserve the affected
-        V14 boundaries and continue with an explicit degraded audit record.
-        Historical pipeline versions retain their original behavior.
+        ownership regions and continue with an explicit degraded audit
+        record. Historical V9-V14 analyses are stored data only; no new
+        Processing Run reaches their retired worker paths.
         """
+
+        def persist_v15_checkpoint(checkpoint: SourceAnalysisResult) -> None:
+            run.analysis_json = _stamp_analysis_checksum(
+                _serialize_analysis(checkpoint)
+            )
+            session.commit()
+
+        analysis_adapter = self.dependencies.analysis
         completion = complete_boundary_adjudication(
             analysis,
-            self.dependencies.translation,
+            self._translation_for_run(run),
+            (
+                persist_v15_checkpoint
+                if analysis.pipeline_version in WORD_OWNERSHIP_PIPELINES
+                else None
+            ),
+            measure_edges=(
+                lambda ranges: analysis_adapter.measure_ownership(
+                    analysis, archive, ranges
+                )
+            )
+            if analysis_adapter is not None
+            else None,
         )
-        if analysis.pipeline_version == SPEECH_PIPELINE_V14:
-            degraded = completion.discourse_error is not None
-            self._record_activity(
-                session,
-                run,
-                kind=(
-                    "speaker_boundary_adjudication_degraded"
-                    if degraded
-                    else "speaker_boundary_adjudication_completed"
-                ),
-                stage="source_analysis",
-                summary=(
-                    "Unified Speaker boundary adjudication preserved its "
-                    "affected boundaries because planning or review degraded."
-                    if degraded
-                    else (
-                        "Unified Speaker boundary adjudication reviewed "
-                        f"{completion.boundary_candidate_count} candidates, "
-                        f"applied {completion.boundary_split_count} suffix "
-                        "moves and "
-                        f"{completion.boundary_reassign_count} whole "
-                        "reassignments."
-                    )
-                ),
-                metadata={
-                    "candidate_count": completion.boundary_candidate_count,
-                    "planner_proposed_count": (
-                        completion.boundary_planner_proposed_count
-                    ),
-                    "reviewer_approved_count": (
-                        completion.boundary_reviewer_approved_count
-                    ),
-                    "split_to_next_count": completion.boundary_split_count,
-                    "reassign_whole_count": completion.boundary_reassign_count,
-                    "locally_preserved_component_count": (
-                        completion.boundary_locally_preserved_component_count
-                    ),
-                    "conflict_component_count": (
-                        completion.boundary_conflict_component_count
-                    ),
-                    "provider_degraded_component_count": (
-                        completion.boundary_provider_degraded_component_count
-                    ),
-                    "error": completion.discourse_error,
-                    "completed": completion.completed,
-                },
-            )
+        if analysis.pipeline_version not in WORD_OWNERSHIP_PIPELINES:
             return completion
-        if completion.discourse_error is not None:
-            self._record_activity(
-                session,
-                run,
-                kind="adjudication_degraded",
-                stage="source_analysis",
-                summary=(
-                    "Discourse judge unavailable; disputed fragments "
-                    "kept ownership and were marked for review."
+        degraded = completion.discourse_error is not None
+        self._record_activity(
+            session,
+            run,
+            kind=(
+                "speaker_ownership_adjudication_degraded"
+                if degraded
+                else "speaker_ownership_adjudication_completed"
+            ),
+            stage="source_analysis",
+            summary=(
+                "Speaker ownership adjudication completed with isolated "
+                "provider or evidence degradation; valid final "
+                "assignments continued."
+                if degraded
+                else (
+                    "Speaker ownership adjudication reviewed "
+                    f"{completion.ownership_region_count} risk regions, "
+                    f"changed {completion.ownership_changed_word_count} "
+                    "word owners, and created "
+                    f"{completion.natural_segment_count} natural segments."
+                )
+            ),
+            metadata={
+                "region_count": completion.ownership_region_count,
+                "changed_word_count": (completion.ownership_changed_word_count),
+                "disputed_region_count": (
+                    completion.ownership_disputed_region_count
                 ),
-                metadata={
-                    "discourse_error": completion.discourse_error,
-                    "dispute_count": completion.dispute_count,
-                    "completed": completion.completed,
-                },
-            )
-        if (
-            supports_speaker_tail_repair(analysis.pipeline_version)
-            and completion.tail_repair_error is None
-        ):
-            self._record_activity(
-                session,
-                run,
-                kind="speaker_tail_repair_completed",
-                stage="source_analysis",
-                summary=(
-                    "Speaker tail repair reviewed "
-                    f"{completion.tail_repair_candidate_count} candidates "
-                    f"and applied {completion.tail_repair_count} repairs."
+                "natural_segment_count": completion.natural_segment_count,
+                "fallback_boundary_count": (
+                    completion.natural_fallback_boundary_count
                 ),
-                metadata={
-                    "candidate_count": (
-                        completion.tail_repair_candidate_count
-                    ),
-                    "repair_count": completion.tail_repair_count,
-                    "completed": completion.completed,
-                    **(
-                        _v13_tail_repair_activity_metadata(completion)
-                        if analysis.pipeline_version == SPEECH_PIPELINE_V13
-                        else {}
-                    ),
-                },
-            )
-        elif completion.tail_repair_error is not None:
-            self._record_activity(
-                session,
-                run,
-                kind="speaker_tail_repair_degraded",
-                stage="source_analysis",
-                summary=(
-                    (
-                        "Speaker tail repair applied "
-                        f"{completion.tail_repair_count} repairs and preserved "
-                        f"{completion.tail_repair_locally_preserved_component_count} "
-                        "local components; each existing segment pair was "
-                        "preserved locally."
-                    )
-                    if analysis.pipeline_version == SPEECH_PIPELINE_V13
-                    else (
-                        "Speaker tail repair abstained; the existing segment "
-                        "pair was preserved."
-                    )
-                ),
-                metadata={
-                    "tail_repair_error": completion.tail_repair_error,
-                    "candidate_count": (
-                        completion.tail_repair_candidate_count
-                    ),
-                    "repair_count": completion.tail_repair_count,
-                    "completed": completion.completed,
-                    **(
-                        _v13_tail_repair_activity_metadata(completion)
-                        if analysis.pipeline_version == SPEECH_PIPELINE_V13
-                        else {}
-                    ),
-                },
-            )
+                "error": completion.discourse_error,
+                "completed": completion.completed,
+            },
+        )
         return completion
 
     def _persist_decision_ledger(
@@ -8477,12 +8942,12 @@ class TransPodcastService:
             )
             current_translation = deserialize_translation(run.translation_json)
             try:
-                revised_translation = (
-                    self.dependencies.translation.retranslate_segment(
-                        source,
-                        current_translation,
-                        job.ordinal,
-                    )
+                revised_translation = self._translation_for_run(
+                    run
+                ).retranslate_segment(
+                    source,
+                    current_translation,
+                    job.ordinal,
                 )
             except (RuntimeError, ValueError) as error:
                 job.status = "review_queue"
@@ -8566,7 +9031,9 @@ class TransPodcastService:
                     "output_tokens": revised_translation.output_tokens,
                     "elapsed_ms": revised_translation.elapsed_ms,
                     "segment_ordinal": job.ordinal,
-                    "codex_cli_version": (revised_translation.cli_version),
+                    "agent_provider": run.agent_provider
+                    or DEFAULT_AGENT_PROVIDER,
+                    "cli_version": revised_translation.cli_version,
                 },
                 duration_ms=revised_translation.elapsed_ms,
             )
@@ -8869,7 +9336,10 @@ class TransPodcastService:
                 ),
                 prior_preview_audio=prior_preview,
                 prior_render_json=run.render_json,
+                processing_run_id=run.id,
+                speech_pipeline_version=run.pipeline_version,
             )
+            revision_audit: ListeningAuditVerdict | None = None
             try:
                 speech = self.dependencies.speech.render_segment(
                     source,
@@ -8880,7 +9350,19 @@ class TransPodcastService:
                 self._validate_speech(
                     speech,
                     len(render_plan.translation.segments),
+                    expected_rendered_segments=_rendered_unit_count(
+                        render_plan
+                    ),
                 )
+                revision_audit = listening_audit_verdict(
+                    speech.pipeline_version,
+                    speech.render_settings_json,
+                )
+                if (
+                    revision_audit is not None
+                    and revision_audit.blocks_publication
+                ):
+                    raise ValueError(revision_audit.review_summary())
             except SpendGuardrailReached as error:
                 self._write_setting(
                     session,
@@ -8951,7 +9433,8 @@ class TransPodcastService:
             )
             episode.quality_json = _serialize_quality(
                 speech,
-                len(render_plan.translation.segments),
+                _rendered_unit_count(render_plan),
+                audit=revision_audit,
             )
             run.render_json = _serialize_speech_checkpoint(speech)
             run.render_preview_key = preview_key
@@ -9811,6 +10294,9 @@ def _default_settings() -> dict[str, object]:
         "processing_target_hours": 24,
         "manual_processing": True,
         "auto_discovery": False,
+        "speech_model": SPEECH_MODEL_INDEXTTS2,
+        # Owner decision D6: Codex stays the default Agent provider.
+        "agent_provider": DEFAULT_AGENT_PROVIDER,
         "notification_preferences": {
             "candidate_decision": True,
             "automatic_ignore": False,
@@ -9819,6 +10305,16 @@ def _default_settings() -> dict[str, object]:
             "publication_decision": True,
         },
     }
+
+
+def _agent_provider_status(adapter: TranslationAdapter) -> dict[str, object]:
+    """Readiness plus CLI identity when the adapter can report it."""
+    report = getattr(adapter, "provider_status", None)
+    if callable(report):
+        status = report()
+        if isinstance(status, dict):
+            return {str(key): value for key, value in status.items()}
+    return {"ready": adapter.readiness()}
 
 
 def _channel_payload(channel: ChannelResolution) -> dict[str, object]:
@@ -9967,6 +10463,11 @@ def _matching_adjudication_record(
                         "whole-reassignment-applied",
                     }
                 )
+                or (
+                    item.get("kind") == "speaker-ownership-adjudication"
+                    and item.get("verdict")
+                    in {"applied-confirmed", "applied-disputed"}
+                )
             )
         ),
     )
@@ -9997,6 +10498,7 @@ def _matching_adjudication_record(
         if record.get("kind") in {
             "speaker-tail-boundary-repair",
             "speaker-boundary-adjudication",
+            "speaker-ownership-adjudication",
         }:
             if (
                 subject_start <= start_seconds + 1e-6
@@ -10014,6 +10516,10 @@ def _counterpart_speaker(
     record: dict[str, object],
     registry_by_label: dict[str, object],
     speaker_rows: Mapping[int, SpeakerRecord],
+    *,
+    segment_start_seconds: float | None = None,
+    segment_end_seconds: float | None = None,
+    current_speaker_label: str = "",
 ) -> dict[str, object] | None:
     """Resolve the adjudication record's actual counterpart label to a
     registry Speaker, so an overturn can never point at the wrong
@@ -10021,11 +10527,19 @@ def _counterpart_speaker(
     evidence = record.get("evidence")
     if not isinstance(evidence, dict):
         return None
-    label = str(
-        evidence.get("counterpart")
-        or evidence.get("planner_target_owner")
-        or ""
-    )
+    if record.get("kind") == "speaker-ownership-adjudication":
+        label = _v15_counterpart_label(
+            evidence,
+            segment_start_seconds=segment_start_seconds,
+            segment_end_seconds=segment_end_seconds,
+            current_speaker_label=current_speaker_label,
+        )
+    else:
+        label = str(
+            evidence.get("counterpart")
+            or evidence.get("planner_target_owner")
+            or ""
+        )
     speaker_id = registry_by_label.get(label)
     if not isinstance(speaker_id, int):
         return None
@@ -10037,6 +10551,54 @@ def _counterpart_speaker(
         "display_name": row.display_name,
         "label": label,
     }
+
+
+def _v15_counterpart_label(
+    evidence: dict[str, object],
+    *,
+    segment_start_seconds: float | None,
+    segment_end_seconds: float | None,
+    current_speaker_label: str,
+) -> str:
+    if segment_start_seconds is None or segment_end_seconds is None:
+        return ""
+    applied_plan = evidence.get("applied_plan")
+    immutable_words = evidence.get("immutable_words")
+    if not isinstance(applied_plan, dict) or not isinstance(
+        immutable_words,
+        list,
+    ):
+        return ""
+    assignments = applied_plan.get("assignments")
+    if not isinstance(assignments, list):
+        return ""
+    assigned_indexes: set[int] = set()
+    for assignment in assignments:
+        if (
+            not isinstance(assignment, dict)
+            or str(assignment.get("speaker_label", ""))
+            != current_speaker_label
+        ):
+            continue
+        first = assignment.get("first_word_index")
+        last = assignment.get("last_word_index")
+        if isinstance(first, int) and isinstance(last, int):
+            assigned_indexes.update(range(first, last + 1))
+    labels = {
+        str(word.get("current_owner", ""))
+        for word in immutable_words
+        if isinstance(word, dict)
+        and isinstance(word.get("word_index"), int)
+        and int(word["word_index"]) in assigned_indexes
+        and float(word.get("end_seconds", 0.0))
+        > segment_start_seconds - 1e-6
+        and float(word.get("start_seconds", 0.0))
+        < segment_end_seconds + 1e-6
+    }
+    if len(labels) != 1:
+        return ""
+    label = next(iter(labels))
+    return label if label and label != current_speaker_label else ""
 
 
 def _canonical_segment_at(
@@ -10119,6 +10681,7 @@ def _serialize_analysis(analysis: SourceAnalysisResult) -> str:
             "boundary_adjudication": json.loads(
                 analysis.boundary_adjudication_json
             ),
+            "render_plan": json.loads(analysis.render_plan_json),
             "speakers": [
                 {
                     "local_label": speaker.local_label,
@@ -10177,6 +10740,10 @@ def _serialize_speech_checkpoint(speech: SpeechResult) -> str:
             "audio_format": speech.audio_format,
             "estimated_cost_usd": speech.estimated_cost_usd,
             "segment_timings": speech.segment_timings,
+            "render_model": speech.render_model,
+            "render_model_revision": speech.render_model_revision,
+            "render_code_commit": speech.render_code_commit,
+            "render_settings_json": speech.render_settings_json,
             "quality": {
                 "codec": quality.codec,
                 "sample_rate_hz": quality.sample_rate_hz,
@@ -10191,11 +10758,26 @@ def _serialize_speech_checkpoint(speech: SpeechResult) -> str:
                 "clipping": quality.clipping,
                 "rendered_segments": quality.rendered_segments,
                 "timeline_continuous": quality.timeline_continuous,
-                "boundary_artifacts": quality.boundary_artifacts,
-                "source_language_leakage": (quality.source_language_leakage),
+                **_measured_quality_flags(quality),
             },
         }
     )
+
+
+def _measured_quality_flags(quality: AudioQualityReport) -> dict[str, bool]:
+    """Serialize only the optional flags that were actually measured."""
+    return {
+        name: value
+        for name, value in (
+            ("boundary_artifacts", quality.boundary_artifacts),
+            ("source_language_leakage", quality.source_language_leakage),
+        )
+        if value is not None
+    }
+
+
+def _optional_quality_flag(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _deserialize_speech_checkpoint(
@@ -10232,13 +10814,25 @@ def _deserialize_speech_checkpoint(
             clipping=bool(quality["clipping"]),
             rendered_segments=int(quality["rendered_segments"]),
             timeline_continuous=bool(quality["timeline_continuous"]),
-            boundary_artifacts=bool(quality["boundary_artifacts"]),
-            source_language_leakage=bool(quality["source_language_leakage"]),
+            boundary_artifacts=_optional_quality_flag(
+                quality.get("boundary_artifacts")
+            ),
+            source_language_leakage=_optional_quality_flag(
+                quality.get("source_language_leakage")
+            ),
         ),
         estimated_cost_usd=float(parsed.get("estimated_cost_usd", 0.0)),
         segment_timings=tuple(
             (float(item[0]), float(item[1]))
             for item in parsed.get("segment_timings", [])
+        ),
+        render_model=str(parsed.get("render_model", "")),
+        render_model_revision=str(
+            parsed.get("render_model_revision", "")
+        ),
+        render_code_commit=str(parsed.get("render_code_commit", "")),
+        render_settings_json=str(
+            parsed.get("render_settings_json", "{}")
         ),
     )
 
@@ -10322,6 +10916,11 @@ def deserialize_analysis(
         ),
         boundary_adjudication_json=json.dumps(
             parsed.get("boundary_adjudication", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        render_plan_json=json.dumps(
+            parsed.get("render_plan", {}),
             ensure_ascii=False,
             sort_keys=True,
         ),
@@ -10432,6 +11031,8 @@ def _caption_analysis(candidate: SourceCandidate) -> SourceAnalysisResult:
 def _serialize_quality(
     speech: SpeechResult,
     expected_segments: int,
+    *,
+    audit: ListeningAuditVerdict | None = None,
 ) -> str:
     quality = speech.quality
     return json.dumps(
@@ -10455,8 +11056,12 @@ def _serialize_quality(
                 "rendered": quality.rendered_segments,
             },
             "timeline_continuous": quality.timeline_continuous,
-            "boundary_artifacts": quality.boundary_artifacts,
-            "source_language_leakage": quality.source_language_leakage,
+            **_measured_quality_flags(quality),
+            **(
+                {"listening_audit": listening_audit_summary(audit)}
+                if audit is not None
+                else {}
+            ),
         }
     )
 
@@ -10588,6 +11193,11 @@ def _resolve_publication_metadata(
     )
 
 
+def _rendered_unit_count(render_plan: RenderPlan) -> int:
+    """Count hidden render units, or legacy targets when no plan is valid."""
+    return len(render_plan.units) or len(render_plan.translation.segments)
+
+
 def _render_plan_input_hash(
     translation: TranslationResult,
     render_plan: RenderPlan,
@@ -10599,9 +11209,9 @@ def _render_plan_input_hash(
                 or _content_hash(translation.segments)
             ),
             "render_unit_ids": [
-                segment.segment_id
-                for segment in render_plan.analysis.segments
+                unit.unit_id for unit in render_plan.units
             ],
+            "render_units": [unit.to_payload() for unit in render_plan.units],
             "render_segments": render_plan.translation.segments,
             "content_edit_artifact": translation.content_edit_json,
         }
@@ -10621,23 +11231,3 @@ def _render_ordinal_for_canonical_segment(
     if len(matches) != 1 or matches[0][1].segment_id != canonical_segment_id:
         return None
     return matches[0][0]
-
-
-def _v13_tail_repair_activity_metadata(
-    completion: AdjudicationCompletion,
-) -> dict[str, int]:
-    return {
-        "proposed_repair_count": completion.tail_repair_proposed_count,
-        "locally_preserved_component_count": (
-            completion.tail_repair_locally_preserved_component_count
-        ),
-        "locally_degraded_component_count": (
-            completion.tail_repair_locally_degraded_component_count
-        ),
-        "conflict_component_count": (
-            completion.tail_repair_conflict_component_count
-        ),
-        "provider_degraded_component_count": (
-            completion.tail_repair_provider_degraded_component_count
-        ),
-    }

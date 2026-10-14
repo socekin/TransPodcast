@@ -12,6 +12,7 @@ from transpodcast.models import (
     ProcessingRunRecord,
     ProcessingStageRecord,
 )
+from transpodcast.pipeline_versions import SPEECH_PIPELINE_V22
 from transpodcast.testing import (
     AcceptanceHarness,
     FakeAnalysisAdapter,
@@ -190,6 +191,11 @@ def test_reprocessing_an_old_pipeline_rebuilds_source_analysis(tmp_path) -> None
         run.pipeline_version = "transpodcast-modal-pipeline-v8"
         stage.version = "transpodcast-modal-pipeline-v8"
 
+    client.patch(
+        "/api/v1/settings",
+        json={"speech_model": "indextts25"},
+    )
+
     requested = client.post(f"/api/v1/episodes/{episode_id}:reprocess")
 
     assert requested.json()["stage"] == "source_analysis"
@@ -198,7 +204,7 @@ def test_reprocessing_an_old_pipeline_rebuilds_source_analysis(tmp_path) -> None
         run = session.get(ProcessingRunRecord, run_id)
         assert run is not None
         assert run.analysis_json is None
-        assert run.pipeline_version == "pending-current-pipeline"
+        assert run.pipeline_version == SPEECH_PIPELINE_V22
 
     rerun = client.post("/api/v1/processing-runs:advance").json()
 
