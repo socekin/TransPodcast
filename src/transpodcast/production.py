@@ -43,6 +43,7 @@ def build_dependencies(
         executable=resolved.claude_executable,
         model=resolved.claude_model,
         effort=resolved.claude_effort,
+        oauth_token_path=resolved.claude_oauth_token_path,
     )
     project_root = resolved.artifact_root / "translation-projects"
     storage = (

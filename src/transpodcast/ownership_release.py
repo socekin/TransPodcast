@@ -19,7 +19,12 @@ from transpodcast.continuity_preparation import (
 )
 from transpodcast.decision_records import DecisionRecord
 from transpodcast.domain import CanonicalSegment, SourceAnalysisResult
-from transpodcast.natural_segmentation import segment_naturally
+from transpodcast.natural_segmentation import (
+    DEFAULT_NATURAL_SEGMENTATION_POLICY,
+    NaturalBoundary,
+    NaturalSegmentationResult,
+    segment_naturally,
+)
 from transpodcast.ownership_acoustic_coverage import find_ownership_edge_gaps
 from transpodcast.ownership_continuity_completion import (
     ContinuityCompletion,
@@ -28,6 +33,13 @@ from transpodcast.ownership_continuity_completion import (
     question_fingerprint,
 )
 from transpodcast.pipeline_versions import DETERMINISTIC_OWNERSHIP_PIPELINES
+from transpodcast.sentence_integrity import (
+    DEFAULT_SENTENCE_INTEGRITY_POLICY,
+    SENTENCE_INTEGRITY_SUMMARY_KEY,
+    SentenceIntegrityPolicy,
+    SentenceIntegrityResult,
+    integrate_sentences,
+)
 from transpodcast.speaker_ownership_continuity import ContinuityRegion
 from transpodcast.speaker_ownership_v15 import (
     SpeakerOwnershipPlanningResult,
@@ -380,3 +392,203 @@ def disputed_word_indexes(
             disputed.update(span)
     disputed.update(i for start, end in remaining for i in range(start, end))
     return disputed
+
+
+def complete_sentence_integrity(
+    analysis: SourceAnalysisResult,
+    policy: SentenceIntegrityPolicy = DEFAULT_SENTENCE_INTEGRITY_POLICY,
+) -> SourceAnalysisResult:
+    """Apply Sentence Integrity to a completed analysis (V23/V24), once.
+
+    Runs after the Agent ownership layer and before Voice References, for
+    new and reused analyses alike. Only the segments around moved words are
+    re-segmented (Natural Segmentation over that block, punctuated by the
+    segments' own text); every other segment, and its natural-boundary
+    record, stays exactly as completed. Segment ids are renumbered in order.
+    """
+    payload = json.loads(analysis.boundary_adjudication_json or "{}")
+    if SENTENCE_INTEGRITY_SUMMARY_KEY in payload:
+        return analysis
+    per_word: list[CanonicalSegment] = []
+    segment_of_word: list[int] = []
+    for index, segment in enumerate(analysis.segments):
+        for word in segment.words:
+            segment_of_word.append(index)
+            per_word.append(
+                replace(
+                    segment,
+                    segment_id=f"word-{len(per_word)}",
+                    text=word[0],
+                    start_seconds=word[1],
+                    end_seconds=word[2],
+                    words=(word,),
+                )
+            )
+    result = integrate_sentences(
+        [word.words[0] for word in per_word],
+        tuple(word.speaker_label for word in per_word),
+        analysis.full_asr_text,
+        policy,
+    )
+    segments = analysis.segments
+    consolidation_json = analysis.speaker_consolidation_json
+    if result.moves:
+        segments, boundaries = _resegment_moved_blocks(
+            analysis,
+            per_word,
+            segment_of_word,
+            result,
+        )
+        records = [record.to_payload() for record in result.records(policy)]
+        natural_records = [
+            record.to_payload() for record in _natural_boundary_records(boundaries)
+        ]
+
+        def rewritten(existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            kept = [
+                record
+                for record in existing
+                if record.get("kind") != "natural-segmentation-boundary"
+            ]
+            return [*kept, *records, *natural_records]
+
+        payload["decision_records"] = rewritten(payload.get("decision_records", []))
+        continuity = dict(payload.get("speaker_ownership_continuity") or {})
+        if continuity:
+            continuity["decision_records"] = rewritten(
+                continuity.get("decision_records", [])
+            )
+            continuity["natural_segmentation"] = {
+                **dict(continuity.get("natural_segmentation") or {}),
+                **{
+                    key: value
+                    for key, value in boundaries.to_summary().items()
+                    if key != "punctuation_alignment"
+                },
+            }
+            payload["speaker_ownership_continuity"] = continuity
+        consolidation_json = _with_attribution_records(
+            analysis.speaker_consolidation_json,
+            segments,
+            analysis.pipeline_version,
+        )
+    payload[SENTENCE_INTEGRITY_SUMMARY_KEY] = result.summary(policy)
+    return replace(
+        analysis,
+        segments=segments,
+        boundary_adjudication_json=json.dumps(payload, ensure_ascii=False),
+        speaker_consolidation_json=consolidation_json,
+    )
+
+
+def _resegment_moved_blocks(
+    analysis: SourceAnalysisResult,
+    per_word: list[CanonicalSegment],
+    segment_of_word: list[int],
+    result: SentenceIntegrityResult,
+) -> tuple[tuple[CanonicalSegment, ...], NaturalSegmentationResult]:
+    """Re-segment the blocks of segments around moved words.
+
+    A block is every segment holding a moved word or its sentence, plus one
+    neighbour on each side so a moved word can join an adjacent segment of
+    its new owner. Returns the renumbered segments and the episode's
+    natural boundaries (kept outside the blocks, recomputed inside).
+    """
+    affected: set[int] = set()
+    for move in result.moves:
+        first = segment_of_word[
+            min(move.first_word_index, move.sentence_first_word_index)
+        ]
+        last = segment_of_word[
+            max(move.last_word_index, move.sentence_last_word_index)
+        ]
+        affected.update(
+            range(max(0, first - 1), min(len(analysis.segments), last + 2))
+        )
+    blocks: list[list[int]] = []
+    for index in sorted(affected):
+        if blocks and index == blocks[-1][-1] + 1:
+            blocks[-1].append(index)
+        else:
+            blocks.append([index])
+    first_word = [0]
+    for segment in analysis.segments:
+        first_word.append(first_word[-1] + len(segment.words))
+    old = _recorded_natural_boundaries(analysis)
+    rebuilt: dict[int, tuple[CanonicalSegment, ...]] = {}
+    boundaries: list[NaturalBoundary] = []
+    inside: list[tuple[int, int]] = []
+    for block in blocks:
+        start, end = first_word[block[0]], first_word[block[-1] + 1]
+        inside.append((start, end))
+        local = segment_naturally(
+            [
+                replace(word, speaker_label=result.owners[start + offset])
+                for offset, word in enumerate(per_word[start:end])
+            ],
+            full_asr_text=" ".join(analysis.segments[i].text for i in block),
+            source_event_ranges=tuple((s, e) for _, s, e in analysis.source_events),
+        )
+        rebuilt[block[0]] = local.segments
+        boundaries.extend(
+            replace(
+                boundary,
+                after_word_index=boundary.after_word_index + start,
+                before_word_index=boundary.before_word_index + start,
+            )
+            for boundary in local.boundaries
+        )
+    boundaries.extend(
+        boundary
+        for boundary in old
+        if not any(
+            start <= boundary.after_word_index < end - 1 for start, end in inside
+        )
+    )
+    boundaries.sort(key=lambda boundary: boundary.after_word_index)
+    skipped = {index for block in blocks for index in block[1:]}
+    ordered: list[CanonicalSegment] = []
+    for index, segment in enumerate(analysis.segments):
+        if index in rebuilt:
+            ordered.extend(rebuilt[index])
+        elif index not in skipped:
+            ordered.append(segment)
+    # Natural Segmentation numbers segments from one.
+    renumbered = tuple(
+        replace(segment, segment_id=f"seg-{index:04d}")
+        for index, segment in enumerate(ordered, start=1)
+    )
+    natural = NaturalSegmentationResult(
+        segments=renumbered,
+        policy_version=DEFAULT_NATURAL_SEGMENTATION_POLICY.version,
+        punctuation_alignment={},
+        boundaries=tuple(boundaries),
+        speaker_boundary_count=sum(b.kind == "speaker" for b in boundaries),
+        source_event_boundary_count=sum(b.kind == "source_event" for b in boundaries),
+        sentence_boundary_count=sum(b.kind == "sentence" for b in boundaries),
+        pause_boundary_count=sum(b.kind == "pause" for b in boundaries),
+        fallback_boundary_count=sum(b.kind == "fallback" for b in boundaries),
+    )
+    return renumbered, natural
+
+
+def _recorded_natural_boundaries(
+    analysis: SourceAnalysisResult,
+) -> list[NaturalBoundary]:
+    payload = json.loads(analysis.boundary_adjudication_json or "{}")
+    continuity = payload.get("speaker_ownership_continuity") or {}
+    summary = continuity.get("natural_segmentation") or {}
+    return [
+        NaturalBoundary(
+            kind=item["kind"],
+            after_word_index=int(item["after_word_index"]),
+            before_word_index=int(item["before_word_index"]),
+            boundary_seconds=float(item["boundary_seconds"]),
+        )
+        for item in summary.get("boundaries", [])
+    ]
+
+
+def has_sentence_integrity(analysis: SourceAnalysisResult) -> bool:
+    payload = json.loads(analysis.boundary_adjudication_json or "{}")
+    return SENTENCE_INTEGRITY_SUMMARY_KEY in payload

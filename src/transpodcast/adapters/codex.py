@@ -37,6 +37,10 @@ from transpodcast.adapters.agent import (
     provider_identity,
     runner_provider,
 )
+from transpodcast.crosstalk import (
+    CROSSTALK_CANDIDATES_PATH,
+    crosstalk_candidates_payload,
+)
 from transpodcast.domain import (
     PublicationMetadataResult,
     SourceCandidate,
@@ -52,18 +56,23 @@ from transpodcast.errors import (
 from transpodcast.listening_translation import (
     GLOSSARY_SKELETON,
     LISTENING_SEGMENT_RULES,
+    LISTENING_TRANSLATION_POLICIES,
     LISTENING_TRANSLATION_POLICY,
     STRUCTURED_SOURCE_WARNINGS_SCHEMA,
     TRANSLATION_POLICY_V3,
     TranslationPolicy,
     budget_heading_suffix,
+    crosstalk_translation_policy,
     description_sponsors,
     listening_source_data,
     listening_translation_policy,
     parse_listening_review_verdict,
     term_candidates,
 )
-from transpodcast.pipeline_versions import DETERMINISTIC_OWNERSHIP_PIPELINES
+from transpodcast.pipeline_versions import (
+    CROSSTALK_PIPELINES,
+    DETERMINISTIC_OWNERSHIP_PIPELINES,
+)
 from transpodcast.publication_metadata import (
     degraded_publication_metadata,
     parse_publication_metadata,
@@ -78,7 +87,10 @@ from transpodcast.speaker_ownership_v15 import (
 from transpodcast.transcript import canonical_caption_segments
 from transpodcast.translation_project_validator import (
     VALIDATOR_VERSION,
+    WORKSHEET_SKELETON_DIRECTORY,
     validate_project,
+    worksheet_lines,
+    worksheet_structure_problem,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -294,14 +306,22 @@ def _listening_policy() -> TranslationPolicy:
     return listening_translation_policy(_REVIEW_VERDICT_REPAIR_INSTRUCTIONS)
 
 
+@cache
+def _crosstalk_policy() -> TranslationPolicy:
+    return crosstalk_translation_policy(_REVIEW_VERDICT_REPAIR_INSTRUCTIONS)
+
+
 def translation_policy_for_pipeline(pipeline_version: str) -> TranslationPolicy:
     """The Translation Project policy for a new project of a pipeline.
 
-    Only the deterministic-ownership pipelines (V21/V22) use the listening
-    policy; every other version, including an unknown or empty one, keeps
+    The crosstalk pipelines (V23/V24) use the crosstalk policy, the other
+    deterministic-ownership pipelines (V21/V22) the listening policy; every
+    other version, including an unknown or empty one, keeps
     ``translation-policy-v3-project``.
     """
 
+    if pipeline_version in CROSSTALK_PIPELINES:
+        return _crosstalk_policy()
     if pipeline_version in DETERMINISTIC_OWNERSHIP_PIPELINES:
         return _listening_policy()
     return PROJECT_TRANSLATION_POLICY_V3
@@ -375,20 +395,43 @@ def render_translation_worksheet(
     return "\n".join(lines)
 
 
+def _checked_worksheet_lines(
+    original: str,
+    edited: str,
+    *,
+    name: str = "",
+) -> tuple[list[str], list[str]]:
+    """Both worksheets' lines, after the shared ``validate.py`` structure check.
+
+    Blank lines at the end of a file never count. The error names the file
+    and line, and keeps the two historical messages: lines added or removed
+    ("structure") and a program-owned line changed ("anchors").
+    """
+    problem = worksheet_structure_problem(original, edited)
+    if problem is not None:
+        label = (
+            "structure was modified"
+            if problem.kind == "structure"
+            else "anchors were modified"
+        )
+        where = f"{name} " if name else ""
+        raise ValueError(
+            f"Translation worksheet {label}: {where}{problem.describe()}"
+        )
+    return worksheet_lines(original), worksheet_lines(edited)
+
+
 def harvest_translation_worksheet(
     original: str,
     edited: str,
 ) -> dict[str, str]:
     """Extract targets while verifying the program-owned skeleton.
 
-    Every non-TARGET line must be byte-identical to the original, in
-    the original order; every TARGET line must be completed. Any
-    violation rejects the whole worksheet.
+    Every non-TARGET line must equal the original, in the original order
+    (``worksheet_structure_problem``); every TARGET line must be completed.
+    Any violation rejects the whole worksheet.
     """
-    original_lines = original.splitlines()
-    edited_lines = edited.splitlines()
-    if len(original_lines) != len(edited_lines):
-        raise ValueError("Translation worksheet structure was modified")
+    original_lines, edited_lines = _checked_worksheet_lines(original, edited)
     targets: dict[str, str] = {}
     current_id = ""
     for original_line, edited_line in zip(
@@ -1727,7 +1770,7 @@ class AgentTranslationAdapter:
             "speaker meaning. Return exactly the revised stable segment "
             "id and do not rewrite other segments."
         )
-        if current.policy_version == LISTENING_TRANSLATION_POLICY:
+        if current.policy_version in LISTENING_TRANSLATION_POLICIES:
             # A listening-policy episode keeps its rules and name forms.
             author_instructions += " " + LISTENING_SEGMENT_RULES
             glossary = _recorded_glossary_entries(current.audit_json)
@@ -1927,7 +1970,9 @@ def _listening_audit(
     return {
         "source_warnings_schema": STRUCTURED_SOURCE_WARNINGS_SCHEMA,
         "listening": {
-            "policy_version": LISTENING_TRANSLATION_POLICY,
+            "policy_version": str(
+                state.get("policy_version", LISTENING_TRANSLATION_POLICY)
+            ),
             "validator_version": VALIDATOR_VERSION,
             "glossary": glossary,
             "bridge_edits": bridge_edits,
@@ -1959,7 +2004,9 @@ def _load_or_create_project(
         )
         if loaded_state.get("input_hash") != input_hash:
             raise ValueError("Translation Project input hash changed")
-        if not (author_root / "translation").is_dir():
+        if (author_root / "translation").is_dir():
+            _write_worksheet_skeletons(author_root, skeletons)
+        else:
             _prepare_author_project(
                 author_root,
                 source_data,
@@ -2100,15 +2147,48 @@ def _prepare_author_project(
             skeleton,
             encoding="utf-8",
         )
+    _write_worksheet_skeletons(author_root, skeletons)
     if policy.listening:
-        _write_listening_sources(author_root, source_data)
+        _write_listening_sources(
+            author_root, source_data, crosstalk=policy.crosstalk
+        )
         glossary_path = author_root / "glossary.json"
         if not glossary_path.is_file():
             glossary_path.write_text(GLOSSARY_SKELETON, encoding="utf-8")
 
 
-def _write_listening_sources(root: Path, source_data: dict[str, Any]) -> None:
-    """Program-owned glossary seeds and the description sponsor list."""
+def _write_worksheet_skeletons(root: Path, skeletons: dict[str, str]) -> None:
+    """Read-only copies of the original worksheets for ``validate.py``.
+
+    Rewritten whenever they differ, so a project created before the copies
+    existed gains them on its next turn.
+    """
+    directory = root / WORKSHEET_SKELETON_DIRECTORY
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, skeleton in skeletons.items():
+        path = directory / name
+        if not path.is_file() or path.read_text(encoding="utf-8") != skeleton:
+            path.write_text(skeleton, encoding="utf-8")
+
+
+def _write_listening_sources(
+    root: Path,
+    source_data: dict[str, Any],
+    *,
+    crosstalk: bool = False,
+) -> None:
+    """Program-owned glossary seeds, the description sponsor list, and
+    (crosstalk policy) the crosstalk candidates."""
+
+    if crosstalk:
+        root.joinpath(CROSSTALK_CANDIDATES_PATH).write_text(
+            json.dumps(
+                crosstalk_candidates_payload(source_data["segments"]),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     root.joinpath("source", "term-candidates.json").write_text(
         json.dumps(term_candidates(source_data), ensure_ascii=False, indent=2),
@@ -2164,6 +2244,7 @@ def _prepare_review_project(
             policy.validator,
             encoding="utf-8",
         )
+        _write_worksheet_skeletons(review_root, skeletons)
         content_edit_path = review_root / "content-edit.json"
         if not content_edit_path.is_file():
             content_edit_path.write_text(
@@ -2171,7 +2252,9 @@ def _prepare_review_project(
                 encoding="utf-8",
             )
         if policy.listening:
-            _write_listening_sources(review_root, source_data)
+            _write_listening_sources(
+                review_root, source_data, crosstalk=policy.crosstalk
+            )
             _copy_author_glossary(author_root, review_root, replace=False)
         publication_metadata_path = (
             review_root / "publication-metadata.json"
@@ -2219,6 +2302,7 @@ def _prepare_review_project(
             author_root / "translation" / name,
             translation_root / name,
         )
+    _write_worksheet_skeletons(review_root, skeletons)
     review_root.joinpath("verdict.md").write_text(
         policy.verdict_skeleton,
         encoding="utf-8",
@@ -2232,7 +2316,9 @@ def _prepare_review_project(
         encoding="utf-8",
     )
     if policy.listening:
-        _write_listening_sources(review_root, source_data)
+        _write_listening_sources(
+            review_root, source_data, crosstalk=policy.crosstalk
+        )
         _copy_author_glossary(author_root, review_root, replace=True)
 
 
@@ -2269,6 +2355,7 @@ def _inspect_project_targets(
         file_targets, file_pending = _inspect_translation_worksheet(
             original,
             edited_path.read_text(encoding="utf-8"),
+            name=name,
         )
         targets.update(file_targets)
         pending.extend(file_pending)
@@ -2278,11 +2365,14 @@ def _inspect_project_targets(
 def _inspect_translation_worksheet(
     original: str,
     edited: str,
+    *,
+    name: str = "",
 ) -> tuple[dict[str, str], list[str]]:
-    original_lines = original.splitlines()
-    edited_lines = edited.splitlines()
-    if len(original_lines) != len(edited_lines):
-        raise ValueError("Translation worksheet structure was modified")
+    original_lines, edited_lines = _checked_worksheet_lines(
+        original,
+        edited,
+        name=name,
+    )
     targets: dict[str, str] = {}
     pending: list[str] = []
     current_id = ""

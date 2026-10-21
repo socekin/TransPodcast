@@ -392,6 +392,63 @@ describe("Processing Run experience", () => {
     expect(screen.getByText(runCopy.history.legacyTiming)).toBeVisible();
   });
 
+  it("closes a Review Queue run after the Owner confirms", async () => {
+    const currentError = {
+      kind: "translation_schema",
+      summary: "Translation worksheet target is unfinished",
+      step: "translation_authoring",
+      retryable: true
+    };
+    const failed = runView({
+      status: "review_queue",
+      state: "review_queue",
+      owner_state: "action_required",
+      current_error: currentError
+    });
+    const closed = runView({
+      status: "closed",
+      state: "closed",
+      owner_state: "closed",
+      current_error: { ...currentError, retryable: false }
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (
+          url === "/api/v1/processing-runs/8:close"
+          && init?.method === "POST"
+        ) {
+          return new Response(JSON.stringify(closed), { status: 200 });
+        }
+        if (url === "/api/v1/processing-runs/8") {
+          return new Response(JSON.stringify(failed), { status: 200 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      })
+    );
+    const user = userEvent.setup();
+
+    render(<Runs runId={8} onOpenRun={() => undefined} />);
+    await user.click(
+      await screen.findByRole("button", { name: runCopy.actions.close })
+    );
+
+    expect(confirm).toHaveBeenCalledWith(runCopy.actions.closeConfirm);
+    expect(
+      await screen.findByText(runCopy.error.closedNote)
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(runCopy.states.closed)).not.toHaveLength(0);
+    expect(
+      screen.queryByRole("button", { name: runCopy.actions.retry })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: runCopy.actions.close })
+    ).not.toBeInTheDocument();
+  });
+
   it("asks the Owner to continue past remaining Listening Audit findings", async () => {
     const failed = runView({
       status: "review_queue",

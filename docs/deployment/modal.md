@@ -110,6 +110,8 @@ In single-account mode, the script deploys changed applications to
 `data/deploy-state`. In multi-account mode, it deploys every application under
 each profile and records each successful profile in
 `data/deploy-state.d/<profile>`. A second run skips unchanged applications.
+Run it again after every upgrade that changes an application under
+`experiments/pipeline/`; for example, 0.3.0 changes the Qwen3-ASR application.
 
 ## Verify
 

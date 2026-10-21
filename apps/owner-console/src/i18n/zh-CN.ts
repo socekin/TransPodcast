@@ -83,6 +83,7 @@ export const copy = {
     publishedState: "已发布",
     unpublishedState: "未发布",
     takenDownState: "已下架",
+    closedState: "已关闭",
     reprocessing: "重新处理中",
     reprocess: "重新处理",
     reprocessingAction: "正在创建任务…",
@@ -483,6 +484,8 @@ export const copy = {
     originManual: "手动添加",
     originBackfill: "往期回补",
     originDiscovery: "自动发现",
+    originAgent: "Agent 添加",
+    originAgentFor: (agent: string) => `由 ${agent} 添加`,
     started: "已开始处理。",
     startedAllPrefix: "已开始 ",
     startedAllSuffix: " 个任务。",
@@ -659,6 +662,13 @@ export const copy = {
     agentSelected: (name: string) => `处理 Agent · ${name}`,
     agentCliStatus: (codex: string, claude: string) =>
       `Codex CLI ${codex} · Claude Code ${claude}`,
+    agentCliAuth: (status: string, authMethod: string) => {
+      const labels: Record<string, string> = {
+        oauth_token: "长期 token",
+        "claude.ai": "共享交互登录"
+      };
+      return `${status}（${labels[authMethod] ?? authMethod}）`;
+    },
     modal: "Modal",
     cloudflare: "Cloudflare R2",
     telegram: "Telegram",

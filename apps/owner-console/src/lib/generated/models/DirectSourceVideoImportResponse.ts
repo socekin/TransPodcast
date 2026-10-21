@@ -7,6 +7,7 @@ export type DirectSourceVideoImportResponse = {
   candidate_status: string;
   candidate_video_id: number;
   episode_id: (number | null);
+  estimated_cost_usd?: (number | null);
   processing_run_id: (number | null);
   reused: boolean;
   run_status: (string | null);

@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import modal
 
@@ -47,6 +48,7 @@ image = (
             "HF_HUB_CACHE": "/models/huggingface/hub",
         }
     )
+    .add_local_python_source("transpodcast")
 )
 
 app = modal.App(APP_NAME, image=image)
@@ -94,6 +96,13 @@ class Qwen3Transcriber:
                 "device_map": "cuda:0",
             },
         )
+        from transpodcast.asr_guard import apply_audio_window_fix
+
+        # qwen-asr 0.0.6 runs the audio encoder with sdpa here, which ignores
+        # its 8 s attention windows unless they are passed as a mask.
+        self.audio_window_fix = apply_audio_window_fix(
+            self.model.model.thinker.audio_tower
+        )
         torch.cuda.reset_peak_memory_stats()
 
     @modal.method()
@@ -102,42 +111,60 @@ class Qwen3Transcriber:
         audio_bytes: bytes,
         language: str = "English",
     ) -> dict:
-        import torch
+        import io
 
-        audio_path = Path("/tmp/source-16k.wav")
-        audio_path.write_bytes(audio_bytes)
+        import soundfile
+        import torch
+        from qwen_asr.inference.utils import split_audio_into_chunks
+
+        from transpodcast.asr_guard import transcribe_guarded
+
         torch.cuda.reset_peak_memory_stats()
         started_at = time.perf_counter()
+        wav, sample_rate = soundfile.read(io.BytesIO(audio_bytes), dtype="float32")
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
 
-        results = self.model.transcribe(
-            audio=str(audio_path),
-            language=language,
-            return_time_stamps=True,
+        def transcribe_piece(piece: Any) -> tuple[str, list[dict[str, Any]]]:
+            results = self.model.transcribe(
+                audio=(piece, sample_rate),
+                language=language,
+                return_time_stamps=True,
+            )
+            if not results:
+                raise RuntimeError("Qwen3-ASR returned no transcription")
+            stamps = results[0].time_stamps
+            words = [
+                {
+                    "text": item.text,
+                    "start_seconds": item.start_time,
+                    "end_seconds": item.end_time,
+                }
+                for item in (stamps.items if stamps is not None else [])
+            ]
+            return results[0].text, words
+
+        guarded = transcribe_guarded(
+            wav,
+            seconds=lambda piece: len(piece) / sample_rate,
+            split=lambda piece, target: split_audio_into_chunks(
+                wav=piece, sr=sample_rate, max_chunk_sec=target
+            ),
+            transcribe=transcribe_piece,
         )
-        if not results:
-            raise RuntimeError("Qwen3-ASR returned no transcription")
-
-        result = results[0]
-        if result.time_stamps is None:
+        if not guarded.words:
             raise RuntimeError("Qwen3-ASR returned no forced alignment")
-
-        words = [
-            {
-                "text": item.text,
-                "start_seconds": item.start_time,
-                "end_seconds": item.end_time,
-            }
-            for item in result.time_stamps.items
-        ]
 
         return {
             "asr_model_id": ASR_MODEL_ID,
             "asr_model_revision": ASR_MODEL_REVISION,
             "aligner_model_id": ALIGNER_MODEL_ID,
             "aligner_model_revision": ALIGNER_MODEL_REVISION,
-            "language": result.language,
-            "text": result.text,
-            "words": words,
+            "language": language,
+            "text": guarded.text,
+            "words": guarded.words,
+            "audio_window_fix": self.audio_window_fix,
+            "asr_guard": guarded.diagnostics(),
             "gpu_name": torch.cuda.get_device_name(),
             "inference_seconds": time.perf_counter() - started_at,
             "peak_gpu_memory_gib": (torch.cuda.max_memory_allocated() / (1024**3)),

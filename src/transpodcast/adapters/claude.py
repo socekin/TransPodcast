@@ -17,9 +17,16 @@ Every invocation is isolated from the Owner's personal Claude Code setup:
   session (``CLAUDE*``, ``MCP_*``, and ``ANTHROPIC_DEFAULT_*`` model
   overrides), so a call made from inside Claude Code behaves like one made
   by the launchd worker. It also drops ``ANTHROPIC_API_KEY`` so TransPodcast
-  always runs on the Owner's flat-rate claude.ai login rather than API
+  always runs on the Owner's flat-rate claude.ai subscription rather than API
   billing, and sets ``DISABLE_AUTOUPDATER=1`` so the recorded CLI version
   cannot drift in the middle of a Translation Project.
+- When the Claude OAuth token file exists, its one-year token from
+  ``claude setup-token`` becomes ``CLAUDE_CODE_OAUTH_TOKEN`` for every call.
+  Without it the CLI uses the interactive ``/login`` credential in the macOS
+  Keychain, which every ``claude`` session on the TransPodcast host shares and
+  refreshes; that shared credential stopped refreshing on 2026-10-19 and
+  paused background processing. The file is read on each call, so replacing
+  the token needs no restart.
 
 ``scripts/claude_isolation_canary.py`` verifies these guarantees against the
 real CLI.
@@ -114,7 +121,12 @@ _AUTH_MARKERS: tuple[str, ...] = (
     "please run /login",
     "invalid api key",
     "authentication_error",
+    "authentication_failed",
+    "failed to authenticate",
     "oauth token has expired",
+    # A Keychain login that can no longer refresh reports "OAuth session
+    # expired and could not be refreshed".
+    "oauth session expired",
     "invalid bearer token",
 )
 _RATE_LIMIT_MARKERS: tuple[str, ...] = (
@@ -130,6 +142,8 @@ _SCHEMA_SUBTYPES = frozenset({"error_max_structured_output_retries"})
 
 def isolated_environment(
     base: Mapping[str, str] | None = None,
+    *,
+    oauth_token: str = "",
 ) -> dict[str, str]:
     """Return the child environment for every Claude Code invocation."""
     source = os.environ if base is None else base
@@ -138,6 +152,8 @@ def isolated_environment(
         for key, value in source.items()
         if key in _PRESERVED_ENVIRONMENT or not key.startswith(_HOST_SESSION_PREFIXES)
     }
+    if oauth_token:
+        environment["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
     # Project turns run `python validate.py`; make `python` resolve to the
     # interpreter running TransPodcast even when only `python3` is on PATH.
     interpreter_dir = str(Path(sys.executable).parent)
@@ -279,6 +295,7 @@ class ClaudeRunner:
         executable: str = "claude",
         model: str = "",
         effort: str = "",
+        oauth_token_path: Path | None = None,
     ) -> None:
         if effort and effort not in CLAUDE_EFFORT_LEVELS:
             raise ValueError(f"Unsupported Claude effort level: {effort}")
@@ -286,6 +303,7 @@ class ClaudeRunner:
         self.model = model
         # Empty keeps the Claude Code CLI default effort.
         self.effort = effort
+        self.oauth_token_path = oauth_token_path
         self._readiness_checked_at = 0.0
         self._ready = False
         self._readiness_failure: AgentFailureKind = "provider"
@@ -298,7 +316,8 @@ class ClaudeRunner:
 
     @property
     def auth_method(self) -> str:
-        """``authMethod`` from ``claude auth status``, e.g. ``claude.ai``."""
+        """``authMethod`` from ``claude auth status``: ``oauth_token`` when the
+        token file is in use, ``claude.ai`` for the shared Keychain login."""
         return self._auth_method
 
     def readiness(self) -> bool:
@@ -310,8 +329,8 @@ class ClaudeRunner:
         self._readiness_failure = "provider"
         if shutil.which(self.executable) is None:
             return False
-        environment = isolated_environment()
         try:
+            environment = self.child_environment()
             version_result = self._probe(["--version"], environment)
             auth_result = self._probe(["auth", "status"], environment)
             help_result = self._probe(["--help"], environment)
@@ -480,6 +499,16 @@ class ClaudeRunner:
                 kind=self._readiness_failure,
             )
 
+    def child_environment(self) -> dict[str, str]:
+        """The isolated environment plus the OAuth token file, if present."""
+        path = self.oauth_token_path
+        token = (
+            path.read_text(encoding="utf-8").strip()
+            if path is not None and path.is_file()
+            else ""
+        )
+        return isolated_environment(oauth_token=token)
+
     def _probe(
         self,
         arguments: Sequence[str],
@@ -510,7 +539,7 @@ class ClaudeRunner:
             check=False,
             cwd=cwd,
             timeout=timeout,
-            env=isolated_environment(),
+            env=self.child_environment(),
         )
 
     def _execution(self, envelope: Mapping[str, Any]) -> AgentExecution:

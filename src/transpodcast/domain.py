@@ -35,6 +35,7 @@ class EpisodeLibraryState(StrEnum):
     PUBLISHED = "published"
     UNPUBLISHED = "unpublished"
     TAKEN_DOWN = "taken_down"
+    CLOSED = "closed"
 
 
 class EpisodeLibraryAction(StrEnum):

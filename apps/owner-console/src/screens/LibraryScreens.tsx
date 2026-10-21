@@ -72,6 +72,7 @@ type EpisodeRow = {
     | "ready"
     | "pending"
     | "taken_down"
+    | "closed"
     | "other";
   time: string;
   context: string;
@@ -361,7 +362,9 @@ export function EpisodeLibrary({
           .toLocaleLowerCase()
           .includes(needle);
       const matchesFilter =
-        (filter === "all" && row.bucket !== "taken_down") ||
+        (filter === "all" &&
+          row.bucket !== "taken_down" &&
+          row.bucket !== "closed") ||
         filter === row.bucket;
       return matchesSearch && matchesFilter;
     });
@@ -2747,7 +2750,9 @@ function episodeRowFromApi(
             ? "pending"
             : libraryState === "taken_down"
               ? "taken_down"
-              : "other";
+              : libraryState === "closed"
+                ? "closed"
+                : "other";
   return {
     episodeId: item.episode_id,
     processingRunId: item.processing_run_id,
@@ -2765,7 +2770,7 @@ function episodeRowFromApi(
     context:
       item.episode_id === null
         ? queueItem
-          ? queueOriginLabel(queueItem.origin)
+          ? queueOriginLabel(queueItem.origin, queueItem.origin_agent)
           : copy.library.processingContext
         : copy.library.fromTransPodcast,
     libraryState,
@@ -2784,13 +2789,17 @@ function episodeRowKey(row: EpisodeRow): string {
 }
 
 function queueOriginLabel(
-  origin: ApiProcessingQueueItem["origin"]
+  origin: ApiProcessingQueueItem["origin"],
+  agent?: string | null
 ): string {
   if (origin === "manual") {
     return copy.queue.originManual;
   }
   if (origin === "backfill") {
     return copy.queue.originBackfill;
+  }
+  if (origin === "agent") {
+    return agent ? copy.queue.originAgentFor(agent) : copy.queue.originAgent;
   }
   return copy.queue.originDiscovery;
 }
@@ -2806,7 +2815,8 @@ function episodeLibraryStateLabel(
     ready_to_publish: copy.library.readyToPublish,
     published: copy.library.publishedState,
     unpublished: copy.library.unpublishedState,
-    taken_down: copy.library.takenDownState
+    taken_down: copy.library.takenDownState,
+    closed: copy.library.closedState
   };
   return labels[state] ?? copy.library.unknownState;
 }

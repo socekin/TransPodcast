@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   Circle,
+  CircleSlash,
   Clock3,
   Copy,
   RefreshCw,
@@ -25,6 +26,9 @@ import { useStableResource } from "../lib/useStableResource";
 import { cn } from "../lib/utils";
 import { PageHeading } from "./LibraryScreens";
 import "./run-screens.css";
+
+// Owner states that no longer change without an Owner action.
+const SETTLED_OWNER_STATES = ["action_required", "publication_ready", "closed"];
 
 export function Runs({
   runId,
@@ -56,10 +60,7 @@ function RunList({
     (value: { items: ApiRunSummary[] } | null) =>
       value === null ||
       value.items.some(
-        (run) =>
-          !["action_required", "publication_ready"].includes(
-            run.owner_state
-          )
+        (run) => !SETTLED_OWNER_STATES.includes(run.owner_state)
       ),
     []
   );
@@ -165,10 +166,7 @@ function RunDetail({
   const runRevision = useCallback((value: ApiRun) => value.revision, []);
   const continueRunPolling = useCallback(
     (value: ApiRun | null) =>
-      value === null ||
-      !["action_required", "publication_ready"].includes(
-        value.owner_state
-      ),
+      value === null || !SETTLED_OWNER_STATES.includes(value.owner_state),
     []
   );
   const resource = useStableResource(loadRun, {
@@ -179,6 +177,7 @@ function RunDetail({
   });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [actionError, setActionError] = useState("");
   const [diagnosticsState, setDiagnosticsState] = useState<
     "idle" | "copying" | "copied" | "error"
@@ -212,6 +211,23 @@ function RunDetail({
       )
       .finally(() => setRetrying(false));
   };
+  const close = () => {
+    if (!window.confirm(runCopy.actions.closeConfirm)) {
+      return;
+    }
+    setClosing(true);
+    setActionError("");
+    api
+      .closeRun(run.id)
+      .then(resource.replace)
+      .catch((reason: unknown) =>
+        setActionError(
+          reason instanceof Error ? reason.message : String(reason)
+        )
+      )
+      .finally(() => setClosing(false));
+  };
+  const closed = run.status === "closed";
   const copyDiagnostics = () => {
     setDiagnosticsState("copying");
     api
@@ -416,7 +432,7 @@ function RunDetail({
           aria-label={runCopy.currentPanel}
         >
           {run.current_error ? (
-            <div role="alert">
+            <div role={closed ? undefined : "alert"}>
               <Card className="run-error-card">
                 <span className="run-error-icon">
                   <AlertCircle size={17} aria-hidden="true" />
@@ -424,36 +440,60 @@ function RunDetail({
                 <div>
                   <h2>{runCopy.error.title}</h2>
                   <p>{currentErrorSummary(run.current_error)}</p>
-                  <dl>
-                    <div>
-                      <dt>{runCopy.error.retryPlan}</dt>
-                      <dd>{stepLabel(run.retry_plan.resume_step)}</dd>
-                    </div>
-                    <div>
-                      <dt>{runCopy.error.reused}</dt>
-                      <dd>
-                        {run.retry_plan.reused_steps
-                          .map(stepLabel)
-                          .join(" · ") || "—"}
-                      </dd>
-                    </div>
-                  </dl>
-                  <p className="run-retry-note">
-                    {run.retry_plan.preserves_translation_targets
-                      ? runCopy.error.preservedTargets
-                      : runCopy.error.repeatedTargets}
-                  </p>
-                  <Button
-                    disabled={retrying || !run.current_error.retryable}
-                    onClick={retry}
-                  >
-                    <RotateCcw size={14} aria-hidden="true" />
-                    {retrying
-                      ? runCopy.actions.retrying
-                      : run.current_error.kind === "listening_audit"
-                        ? runCopy.actions.acknowledgeAudit
-                        : runCopy.actions.retry}
-                  </Button>
+                  {closed ? (
+                    <p className="run-closed-note">
+                      {runCopy.error.closedNote}
+                    </p>
+                  ) : (
+                    <>
+                      <dl>
+                        <div>
+                          <dt>{runCopy.error.retryPlan}</dt>
+                          <dd>{stepLabel(run.retry_plan.resume_step)}</dd>
+                        </div>
+                        <div>
+                          <dt>{runCopy.error.reused}</dt>
+                          <dd>
+                            {run.retry_plan.reused_steps
+                              .map(stepLabel)
+                              .join(" · ") || "—"}
+                          </dd>
+                        </div>
+                      </dl>
+                      <p className="run-retry-note">
+                        {run.retry_plan.preserves_translation_targets
+                          ? runCopy.error.preservedTargets
+                          : runCopy.error.repeatedTargets}
+                      </p>
+                      <div className="run-error-actions">
+                        <Button
+                          disabled={
+                            retrying || closing || !run.current_error.retryable
+                          }
+                          onClick={retry}
+                        >
+                          <RotateCcw size={14} aria-hidden="true" />
+                          {retrying
+                            ? runCopy.actions.retrying
+                            : run.current_error.kind === "listening_audit"
+                              ? runCopy.actions.acknowledgeAudit
+                              : runCopy.actions.retry}
+                        </Button>
+                        {run.status === "review_queue" ? (
+                          <Button
+                            tone="secondary"
+                            disabled={retrying || closing}
+                            onClick={close}
+                          >
+                            <CircleSlash size={14} aria-hidden="true" />
+                            {closing
+                              ? runCopy.actions.closing
+                              : runCopy.actions.close}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </>
+                  )}
                   {actionError ? (
                     <p className="run-action-error">{actionError}</p>
                   ) : null}
@@ -782,6 +822,8 @@ function RunStateIcon({ state }: { state: string }) {
         <Check size={16} aria-hidden="true" />
       ) : state === "action_required" ? (
         <AlertCircle size={16} aria-hidden="true" />
+      ) : state === "closed" ? (
+        <CircleSlash size={16} aria-hidden="true" />
       ) : (
         <RefreshCw
           className={
@@ -801,6 +843,8 @@ function StateBadge({ state }: { state: string }) {
   const tone =
     state === "action_required"
       ? "danger"
+      : state === "closed"
+        ? "neutral"
       : ["completed", "publication_ready"].includes(state)
         ? "success"
         : ["waiting_retry", "waiting_to_retry"].includes(state)

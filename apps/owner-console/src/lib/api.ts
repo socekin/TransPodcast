@@ -354,7 +354,8 @@ export type ApiProcessingQueueItem = {
   duration_seconds: number;
   status: string;
   stage: string;
-  origin: "manual" | "backfill" | "discovery";
+  origin: "manual" | "backfill" | "discovery" | "agent";
+  origin_agent?: string | null;
   created_at: string;
 };
 
@@ -845,6 +846,12 @@ export const api = {
   retryRun(runId: number) {
     return request<ApiRun>(
       `/api/v1/processing-runs/${runId}:retry`,
+      { method: "POST" }
+    );
+  },
+  closeRun(runId: number) {
+    return request<ApiRun>(
+      `/api/v1/processing-runs/${runId}:close`,
       { method: "POST" }
     );
   },

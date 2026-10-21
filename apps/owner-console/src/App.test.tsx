@@ -849,8 +849,8 @@ describe("TransPodcast Host navigation", () => {
                     configured: true,
                     ready: false,
                     identity: "claude-code",
-                    cli_version: "",
-                    auth_method: ""
+                    cli_version: "2.1.304 (Claude Code)",
+                    auth_method: "none"
                   }
                 }
               }
@@ -892,7 +892,10 @@ describe("TransPodcast Host navigation", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        copy.settings.agentCliStatus(copy.settings.ready, copy.settings.missing)
+        copy.settings.agentCliStatus(
+          copy.settings.agentCliAuth(copy.settings.ready, "ChatGPT"),
+          copy.settings.missing
+        )
       )
     ).toBeInTheDocument();
 
@@ -1241,7 +1244,8 @@ describe("TransPodcast Host navigation", () => {
               ),
               item("Published item", "published", ["play"], 6, 6),
               item("Unpublished item", "unpublished", ["publish"], 7, 7),
-              item("Taken down item", "taken_down", ["restore"], 8, 8)
+              item("Taken down item", "taken_down", ["restore"], 8, 8),
+              item("Closed item", "closed", ["view"], null, 9)
             ]
           });
         }
@@ -1299,6 +1303,7 @@ describe("TransPodcast Host navigation", () => {
       })
     ).toBeInTheDocument();
     expect(screen.queryByText("Taken down item")).not.toBeInTheDocument();
+    expect(screen.queryByText("Closed item")).not.toBeInTheDocument();
 
     const readyRow = await rowFor("Ready item");
     await user.click(
@@ -1529,6 +1534,78 @@ describe("TransPodcast Host navigation", () => {
     expect(document.querySelector(".ignored-card")).not.toHaveAttribute(
       "open"
     );
+  });
+
+  it("labels a video a local Agent submitted in the Episode Library", async () => {
+    const item = {
+      processing_run_id: 1,
+      title: "Example Guest on building calm agents",
+      duration_seconds: 7200,
+      source_show: "Example Show",
+      stage: "ingest",
+      created_at: "2026-07-28T14:20:40Z"
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/v1/processing-queue") {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  ...item,
+                  candidate_video_id: 1,
+                  youtube_video_id: "example-agent-01",
+                  status: "pending_start",
+                  origin: "agent",
+                  origin_agent: "codex"
+                }
+              ]
+            }),
+            { status: 200 }
+          );
+        }
+        if (url === "/api/v1/settings") {
+          return new Response(
+            JSON.stringify({ automation: { manual_processing: true } }),
+            { status: 200 }
+          );
+        }
+        if (url !== "/api/v1/episode-library") {
+          throw new Error(`Unexpected request: ${url}`);
+        }
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                ...item,
+                episode_id: null,
+                overview: null,
+                state: "pending_start",
+                source_title: item.title,
+                source_url: "https://www.youtube.com/watch?v=example-agent-01",
+                source_published_at: "2026-07-28T00:00:00Z",
+                guests: [],
+                published_at: null,
+                can_reprocess: false,
+                library_state: "ready_to_start",
+                available_actions: ["start", "remove"],
+                artwork_url: ""
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      })
+    );
+    render(<App />);
+
+    expect(
+      await screen.findByText(copy.queue.originAgentFor("codex"), {
+        exact: false
+      })
+    ).toBeInTheDocument();
   });
 
   it("shows a queued Supported Source Video in the Episode Library", async () => {

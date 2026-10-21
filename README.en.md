@@ -43,6 +43,11 @@ other podcast clients.
 - **🧭 Accurate speaker ownership:** Correct word-level speaker attribution with
   deterministic rules and dense voiceprints, merge stray diarization labels,
   relabel whole misattributed spans, and let an agent review risky handoffs.
+- **💬 Crosstalk handling:** When several people talk over each other, return
+  sentence fragments to the speaker who owns the sentence, and let the reviewer
+  reassemble each speaker's complete sentences. Only fragments that cannot be
+  attributed and carry no information are trimmed; no original English audio
+  is kept.
 - **⏱️ Rhythm and pause restoration:** Assemble the Mandarin voices with the
   source's pauses and turn-taking rhythm, and cap long silences inside a
   sentence so conversations sound natural.
@@ -53,9 +58,16 @@ other podcast clients.
 - **🔁 Listening audit and automatic re-render:** After rendering, every unit is
   checked for truncation, insertions, English leakage, speech rate, long
   pauses, and voice drift. Severe findings are re-rendered once automatically;
-  anything that remains needs an explicit confirmation.
+  anything that remains needs an explicit confirmation: continue, or close the
+  run. A misheard short line counts as severe only when its timing is also
+  abnormal, so one or two misheard syllables do not hold an episode back.
 - **🤖 Selectable processing agent:** Use Codex CLI by default or switch to
   Claude Code in Settings. Each Processing Run keeps the agent it started with.
+  The background services can sign in with their own one-year Claude Code
+  token, unaffected by interactive sessions.
+- **🧑‍💻 Local agent command:** Codex, Claude Code, and other local agents can
+  add episodes, follow channels, and report progress with the `transpodcast`
+  command, and start processing only when you ask.
 - **🎙️ Selectable voice model:** Choose IndexTTS 2.0 or IndexTTS 2.5. Each
   Processing Run keeps the model it started with.
 - **✂️ Ad and opening-highlight removal:** Exclude clearly separable third-party
@@ -91,9 +103,9 @@ transcripts, and translations.
 
 ## Known Issues
 
-- **Overlapping speakers:** When multiple people speak at the same time,
-  speaker attribution, source separation, and Mandarin voice transitions may
-  be inaccurate.
+- **Overlapping speakers:** Crosstalk is reassembled into complete sentences
+  per speaker, but in dense overlap speaker attribution and source separation
+  can still be inaccurate, and an occasional talked-over word may be lost.
 - **Laughter:** Laughter and smiling speech may be weakened or lost during
   transcription and speech synthesis, making the generated audio less natural
   than the source.
@@ -186,8 +198,9 @@ flowchart TB
     Quality --> Queue["8. Ready to publish"]
 ```
 
-Speaker analysis and transcription covers diarization, speech recognition,
-word alignment, deterministic speaker ownership with agent review, and natural
+Speaker analysis and transcription covers diarization, speech recognition
+(re-transcribing any chunk where recognition runs away into repetition), word
+alignment, deterministic speaker ownership with agent review, and natural
 segmentation at sentences and pauses. Voice rendering and assembly restores the
 source rhythm and runs the listening audit, with automatic re-rendering where
 needed. Mastering and audio QA measures loudness, peak, codec, sample rate,

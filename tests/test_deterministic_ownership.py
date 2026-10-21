@@ -27,6 +27,7 @@ from transpodcast.modal_pipeline import (
 )
 from transpodcast.pipeline_versions import (
     CONTINUITY_PIPELINES,
+    CROSSTALK_PIPELINES,
     CURRENT_SPEECH_PIPELINE_VERSION,
     DETERMINISTIC_OWNERSHIP_PIPELINES,
     INDEXTTS25_PIPELINES,
@@ -39,6 +40,8 @@ from transpodcast.pipeline_versions import (
     SPEECH_PIPELINE_V20,
     SPEECH_PIPELINE_V21,
     SPEECH_PIPELINE_V22,
+    SPEECH_PIPELINE_V23,
+    SPEECH_PIPELINE_V24,
     WORD_OWNERSHIP_PIPELINES,
     analysis_version_for_pipeline,
     pipeline_version_for_speech_model,
@@ -347,7 +350,7 @@ def test_evidence_lists_adjusted_words_by_aligned_word_index() -> None:
 def test_v21_and_v22_extend_v19_and_v20_with_v21_source_analysis() -> None:
     assert SPEECH_PIPELINE_V21 == "transpodcast-modal-pipeline-v21"
     assert SPEECH_PIPELINE_V22 == "transpodcast-modal-pipeline-v22"
-    assert {SPEECH_PIPELINE_V21, SPEECH_PIPELINE_V22} == (
+    assert {SPEECH_PIPELINE_V21, SPEECH_PIPELINE_V22} <= (
         DETERMINISTIC_OWNERSHIP_PIPELINES
     )
     assert DETERMINISTIC_OWNERSHIP_PIPELINES <= RHYTHM_PIPELINES
@@ -369,10 +372,26 @@ def test_v21_and_v22_extend_v19_and_v20_with_v21_source_analysis() -> None:
         assert analysis_version_for_pipeline(version) == SPEECH_PIPELINE_V15
 
 
-def test_r2_selects_v21_and_v22_for_new_runs() -> None:
-    assert pipeline_version_for_speech_model("indextts2") == SPEECH_PIPELINE_V21
-    assert pipeline_version_for_speech_model("indextts25") == SPEECH_PIPELINE_V22
-    assert CURRENT_SPEECH_PIPELINE_VERSION == SPEECH_PIPELINE_V21
+def test_v23_and_v24_add_crosstalk_handling_to_v21_source_analysis() -> None:
+    assert SPEECH_PIPELINE_V23 == "transpodcast-modal-pipeline-v23"
+    assert SPEECH_PIPELINE_V24 == "transpodcast-modal-pipeline-v24"
+    assert {SPEECH_PIPELINE_V23, SPEECH_PIPELINE_V24} == CROSSTALK_PIPELINES
+    assert CROSSTALK_PIPELINES <= DETERMINISTIC_OWNERSHIP_PIPELINES
+    assert {
+        SPEECH_PIPELINE_V21,
+        SPEECH_PIPELINE_V22,
+        *CROSSTALK_PIPELINES,
+    } == DETERMINISTIC_OWNERSHIP_PIPELINES
+    assert speech_model_for_pipeline_version(SPEECH_PIPELINE_V23) == "indextts2"
+    assert speech_model_for_pipeline_version(SPEECH_PIPELINE_V24) == "indextts25"
+    assert analysis_version_for_pipeline(SPEECH_PIPELINE_V23) == SPEECH_PIPELINE_V21
+    assert analysis_version_for_pipeline(SPEECH_PIPELINE_V24) == SPEECH_PIPELINE_V21
+
+
+def test_the_crosstalk_release_selects_v23_and_v24_for_new_runs() -> None:
+    assert pipeline_version_for_speech_model("indextts2") == SPEECH_PIPELINE_V23
+    assert pipeline_version_for_speech_model("indextts25") == SPEECH_PIPELINE_V24
+    assert CURRENT_SPEECH_PIPELINE_VERSION == SPEECH_PIPELINE_V23
 
 
 def _fake_analysis_models(

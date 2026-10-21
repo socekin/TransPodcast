@@ -412,10 +412,14 @@ function agentProviderLabel(provider: AgentProvider | undefined) {
 }
 
 function agentCliStatusNote(agent: Readiness["agent"]) {
-  const label = (provider: AgentProvider) =>
-    agent?.providers[provider]?.ready
-      ? copy.settings.ready
-      : copy.settings.missing;
+  const label = (provider: AgentProvider) => {
+    const status = agent?.providers[provider];
+    const readiness = status?.ready ? copy.settings.ready : copy.settings.missing;
+    const authMethod = status?.auth_method ?? "";
+    return authMethod && authMethod !== "none"
+      ? copy.settings.agentCliAuth(readiness, authMethod)
+      : readiness;
+  };
   return copy.settings.agentCliStatus(label("codex"), label("claude"));
 }
 

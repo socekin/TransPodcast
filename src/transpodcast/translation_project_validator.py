@@ -21,16 +21,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-VALIDATOR_VERSION = "listening-validator-v1"
+VALIDATOR_VERSION = "listening-validator-v2"
 GLOSSARY_POLICY_VERSION = "listening-glossary-v1"
 CONTENT_EDIT_POLICY_VERSION = "semantic-content-edit-v1"
 TARGET_PLACEHOLDER = "(pending)"
+# Read-only copies of the original worksheets, for the structure check.
+WORKSHEET_SKELETON_DIRECTORY = "source/worksheets"
 BUDGET_CHARACTERS_PER_SECOND = 5.0
 BUDGET_MINIMUM_SECONDS = 2.0
 BUDGET_LOW_RATIO = 0.5
 BUDGET_HIGH_RATIO = 1.4
 BRIDGE_WINDOW_SEGMENTS = 2
 MINIMUM_CONTENT_EDIT_CONFIDENCE = 0.90
+# Crosstalk policy: candidates written by the Processing Service (WS-B).
+CROSSTALK_CANDIDATES = "source/crosstalk-candidates.json"
+CROSSTALK_ACTIONS = ("keep", "reassemble", "trim")
+UNATTRIBUTABLE_OVERLAP = "unattributable_overlap"
+# A Crosstalk Line renders as one unit, which never splits internally.
+MAXIMUM_CROSSTALK_LINE_CHARACTERS = 240
 CONTENT_EDIT_CATEGORIES = frozenset({"opening_highlight", "paid_ad"})
 SPONSOR_STATUSES = frozenset({"removed", "not_read_in_audio"})
 SOURCE_WARNING_KINDS = (
@@ -249,8 +257,75 @@ def parse_verdict(text: str) -> VerdictForm:
     return VerdictForm(fields, sections)
 
 
+@dataclass(frozen=True)
+class WorksheetProblem:
+    """The first change to a program-owned worksheet line.
+
+    ``kind`` is ``structure`` when lines were added or removed and
+    ``anchor`` when a heading, SOURCE, or blank line was changed.
+    """
+
+    kind: str
+    line: int
+    detail: str
+
+    def describe(self) -> str:
+        return f"line {self.line}: {self.detail}"
+
+
+def worksheet_lines(text: str) -> list[str]:
+    """Worksheet lines without the blank lines at the end of the file.
+
+    Editors and Agents often add or drop a final newline; that never changes
+    the worksheet, so it never fails the structure check.
+    """
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def worksheet_structure_problem(
+    original: str,
+    edited: str,
+) -> WorksheetProblem | None:
+    """Compare a worksheet with its original; ``None`` if only TARGETs changed.
+
+    The Processing Service harvests worksheets with this same rule, so
+    ``validate.py`` reports exactly what would make the harvest fail. Every
+    line except the text after ``TARGET: `` must equal the original line
+    (trailing spaces aside), in the original order.
+    """
+    before = worksheet_lines(original)
+    after = worksheet_lines(edited)
+    first: tuple[int, str] | None = None
+    for number, (expected, found) in enumerate(
+        zip(before, after, strict=False),
+        start=1,
+    ):
+        if expected.startswith("TARGET: "):
+            if not found.startswith("TARGET: "):
+                first = (number, f"expected a TARGET line, found {found[:60]!r}")
+                break
+        elif expected.rstrip() != found.rstrip():
+            first = (number, f"expected {expected[:60]!r}, found {found[:60]!r}")
+            break
+    if len(before) != len(after):
+        line, where = first or (min(len(before), len(after)) + 1, "")
+        detail = f"{len(after)} lines, expected {len(before)}"
+        if where:
+            detail += f"; first difference: {where}"
+        elif len(after) > len(before):
+            detail += f"; extra line {after[len(before)][:60]!r}"
+        return WorksheetProblem("structure", line, detail)
+    if first is not None:
+        return WorksheetProblem("anchor", first[0], first[1])
+    return None
+
+
 def validate_project(root: Path) -> ValidationReport:
     report = ValidationReport()
+    _check_worksheet_structure(root, report)
     segments = _load_segments(root, report)
     known_ids = [str(item.get("id", "")) for item in segments]
     order, targets, pending = _read_worksheets(root, report)
@@ -272,6 +347,32 @@ def validate_project(root: Path) -> ValidationReport:
         _check_content_edit(report, root, segments, targets)
         _check_verdict(report, root, known_ids)
     return report
+
+
+def _check_worksheet_structure(root: Path, report: ValidationReport) -> None:
+    skeletons = root / WORKSHEET_SKELETON_DIRECTORY
+    if not skeletons.is_dir():
+        # Projects created before the skeleton copies existed.
+        return
+    for skeleton in sorted(skeletons.glob("part-*.md")):
+        path = root / "translation" / skeleton.name
+        if not path.is_file():
+            report.error(
+                "worksheet_missing",
+                f"translation/{skeleton.name} is missing",
+            )
+            continue
+        problem = worksheet_structure_problem(
+            skeleton.read_text(encoding="utf-8"),
+            path.read_text(encoding="utf-8"),
+        )
+        if problem is not None:
+            report.error(
+                "worksheet_structure",
+                f"translation/{skeleton.name} {problem.describe()}. Only the "
+                "text after TARGET: may change; restore every other line "
+                f"exactly as in {WORKSHEET_SKELETON_DIRECTORY}/{skeleton.name}",
+            )
 
 
 def _load_segments(root: Path, report: ValidationReport) -> list[dict[str, Any]]:
@@ -695,7 +796,406 @@ def _check_content_edit(
             )
     _check_bridge_edits(report, payload, ranges, segments, targets)
     _check_sponsors(report, root, payload, ranges)
+    _check_crosstalk(report, root, payload, ranges, segments)
 
+
+@dataclass(frozen=True)
+class CrosstalkLine:
+    """One complete sentence a Crosstalk Edit renders for one Speaker."""
+
+    speaker: str
+    segment_ids: tuple[str, ...]
+    target: str
+
+
+@dataclass(frozen=True)
+class CrosstalkEdit:
+    """A reassembled or trimmed range of one crosstalk candidate."""
+
+    candidate_id: str
+    action: str
+    start_segment_id: str
+    end_segment_id: str
+    lines: tuple[CrosstalkLine, ...]
+    dropped_segment_ids: tuple[str, ...]
+    rationale: str
+
+
+_COMMON_CAPITALIZED = frozenset({"I", "I'm", "I'll", "I've", "I'd", "OK"})
+_SOURCE_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’&+-]*")
+
+
+def information_terms(text: str) -> list[str]:
+    """Numbers and name-like words in a source fragment.
+
+    A capitalized word counts unless it opens a sentence; an acronym and any
+    word with a digit always count.
+    """
+
+    terms: list[str] = []
+    for match in _SOURCE_WORD.finditer(text):
+        word = match.group(0)
+        if word in _COMMON_CAPITALIZED:
+            continue
+        if _DIGIT.search(word) or (len(word) >= 2 and word.isupper()):
+            terms.append(word)
+            continue
+        if not word[:1].isupper():
+            continue
+        before = text[: match.start()].rstrip()
+        if before and before[-1] not in ".?!":
+            terms.append(word)
+    return list(dict.fromkeys(terms))
+
+
+def check_crosstalk_decisions(
+    report: ValidationReport,
+    decisions: object,
+    candidates: Sequence[Mapping[str, Any]],
+    segments: Sequence[Mapping[str, Any]],
+) -> list[CrosstalkEdit]:
+    """Check content-edit.json ``crosstalk`` and return its edits.
+
+    Every candidate needs a decision: ``keep`` alone, or one or more
+    ``reassemble`` / ``trim`` ranges. The render applies the returned edits
+    only when this reports no ERROR.
+    """
+
+    if decisions is None:
+        decisions = []
+    if not isinstance(decisions, list):
+        report.error("crosstalk_invalid", "crosstalk must be a list")
+        return []
+    positions = {
+        str(segment.get("id", "")): index for index, segment in enumerate(segments)
+    }
+    by_candidate = {str(item.get("candidate_id", "")): item for item in candidates}
+    actions: dict[str, list[str]] = {}
+    claimed: list[tuple[int, int, str]] = []
+    edits: list[CrosstalkEdit] = []
+    for number, decision in enumerate(decisions, start=1):
+        label = f"crosstalk[{number}]"
+        if not isinstance(decision, dict):
+            report.error("crosstalk_invalid", f"{label} must be an object")
+            continue
+        candidate_id = str(decision.get("candidate_id", ""))
+        candidate = by_candidate.get(candidate_id)
+        if candidate is None:
+            report.error(
+                "crosstalk_invalid",
+                f"{label}: unknown candidate_id {candidate_id!r}",
+            )
+            continue
+        label = f"crosstalk[{number}] {candidate_id}"
+        action = decision.get("action")
+        if action not in CROSSTALK_ACTIONS:
+            report.error(
+                "crosstalk_invalid",
+                f"{label}: action must be keep, reassemble or trim",
+            )
+            continue
+        actions.setdefault(candidate_id, []).append(str(action))
+        rationale = decision.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            report.error("crosstalk_invalid", f"{label}: rationale is required")
+            continue
+        if action == "keep":
+            if decision.get("lines") or decision.get("dropped"):
+                report.error(
+                    "crosstalk_invalid",
+                    f"{label}: keep takes no lines or dropped",
+                )
+            continue
+        edit = _crosstalk_edit(
+            report, label, decision, candidate, segments, positions
+        )
+        if edit is None:
+            continue
+        start = positions[edit.start_segment_id]
+        end = positions[edit.end_segment_id]
+        overlapping = [
+            other for first, last, other in claimed if start <= last and first <= end
+        ]
+        if overlapping:
+            report.error(
+                "crosstalk_invalid",
+                f"{label} overlaps {overlapping[0]}",
+                (edit.start_segment_id, edit.end_segment_id),
+            )
+            continue
+        claimed.append((start, end, label))
+        edits.append(edit)
+    for candidate_id in by_candidate:
+        chosen = actions.get(candidate_id, [])
+        if not chosen:
+            report.error(
+                "crosstalk_undecided",
+                f"{candidate_id} needs a crosstalk decision: keep, reassemble "
+                "or trim",
+            )
+        elif "keep" in chosen and len(chosen) > 1:
+            report.error(
+                "crosstalk_invalid",
+                f"{candidate_id} is decided keep and also edited; use one",
+            )
+    return edits
+
+
+def _crosstalk_edit(
+    report: ValidationReport,
+    label: str,
+    decision: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    segments: Sequence[Mapping[str, Any]],
+    positions: Mapping[str, int],
+) -> CrosstalkEdit | None:
+    errors_before = len(report.errors)
+    action = str(decision["action"])
+    members = [str(item) for item in candidate.get("segment_ids", [])]
+    start_id = str(decision.get("start_segment_id", ""))
+    end_id = str(decision.get("end_segment_id", ""))
+    if (
+        start_id not in members
+        or end_id not in members
+        or start_id not in positions
+        or end_id not in positions
+        or positions[start_id] > positions[end_id]
+    ):
+        report.error(
+            "crosstalk_invalid",
+            f"{label}: start_segment_id and end_segment_id must be segments "
+            f"of {candidate.get('candidate_id')}, in order",
+        )
+        return None
+    block = [
+        str(segments[index].get("id", ""))
+        for index in range(positions[start_id], positions[end_id] + 1)
+    ]
+    speakers = sorted(str(item) for item in candidate.get("speakers", []))
+    placed: dict[str, str] = {}
+    lines: list[CrosstalkLine] = []
+    raw_lines = decision.get("lines", [])
+    if not isinstance(raw_lines, list):
+        report.error("crosstalk_invalid", f"{label}: lines must be a list")
+        return None
+    for line_number, line in enumerate(raw_lines, start=1):
+        where = f"{label} line {line_number}"
+        ids = _crosstalk_segment_ids(report, where, line, block, positions)
+        if ids is None:
+            continue
+        speaker = line.get("speaker")
+        if speaker not in speakers:
+            report.error(
+                "crosstalk_invalid",
+                f"{where}: speaker must be one of {', '.join(speakers)}",
+                ids,
+            )
+        target = line.get("target")
+        if (
+            not isinstance(target, str)
+            or not target.strip()
+            or target.strip() == TARGET_PLACEHOLDER
+        ):
+            report.error("crosstalk_invalid", f"{where}: target is required", ids)
+            continue
+        target = target.strip()
+        if len(target) > MAXIMUM_CROSSTALK_LINE_CHARACTERS:
+            report.error(
+                "crosstalk_invalid",
+                f"{where}: target exceeds {MAXIMUM_CROSSTALK_LINE_CHARACTERS} "
+                "characters; split it into two lines",
+                ids,
+            )
+        _check_target_text(report, ids[0], target, label=where)
+        for segment_id in ids:
+            if segment_id in placed:
+                report.error(
+                    "crosstalk_invalid",
+                    f"{where}: {segment_id} is already in {placed[segment_id]}",
+                    (segment_id,),
+                )
+            placed[segment_id] = f"line {line_number}"
+        lines.append(CrosstalkLine(str(speaker), ids, target))
+    firsts = [positions[line.segment_ids[0]] for line in lines]
+    if firsts != sorted(firsts):
+        report.error(
+            "crosstalk_invalid",
+            f"{label}: list lines in source order of their first segment",
+        )
+    dropped: list[str] = []
+    raw_dropped = decision.get("dropped", [])
+    if action == "reassemble":
+        if raw_dropped:
+            report.error(
+                "crosstalk_invalid",
+                f"{label}: reassemble keeps every segment; only trim may drop "
+                "fragments",
+            )
+        if not lines:
+            report.error("crosstalk_invalid", f"{label}: reassemble needs lines")
+    elif not isinstance(raw_dropped, list) or not raw_dropped:
+        report.error(
+            "crosstalk_invalid",
+            f"{label}: trim needs dropped fragments; without them use "
+            "reassemble",
+        )
+    else:
+        for drop_number, drop in enumerate(raw_dropped, start=1):
+            where = f"{label} dropped {drop_number}"
+            ids = _crosstalk_segment_ids(report, where, drop, block, positions)
+            if ids is None:
+                continue
+            if drop.get("reason") != UNATTRIBUTABLE_OVERLAP:
+                report.error(
+                    "crosstalk_invalid",
+                    f"{where}: reason must be {UNATTRIBUTABLE_OVERLAP}; "
+                    "anything you can attribute belongs in a line",
+                    ids,
+                )
+            for segment_id in ids:
+                if segment_id in placed:
+                    report.error(
+                        "crosstalk_invalid",
+                        f"{where}: {segment_id} is already in "
+                        f"{placed[segment_id]}",
+                        (segment_id,),
+                    )
+                placed[segment_id] = f"dropped {drop_number}"
+                dropped.append(segment_id)
+    missing = [segment_id for segment_id in block if segment_id not in placed]
+    if missing:
+        report.error(
+            "crosstalk_incomplete",
+            f"{label}: {', '.join(missing[:8])} must be in a line"
+            + (" or dropped" if action == "trim" else "")
+            + f"; nothing in {start_id}..{end_id} may be lost",
+            missing,
+        )
+    for segment_id in dropped:
+        terms = information_terms(
+            str(segments[positions[segment_id]].get("source_text", ""))
+        )
+        if terms:
+            report.warning(
+                "crosstalk_dropped_information",
+                f"{segment_id}: the dropped fragment says "
+                f"{', '.join(terms[:4])}; keep it in a line or justify why it "
+                "cannot be attributed",
+                (segment_id,),
+            )
+    if len(report.errors) > errors_before:
+        return None
+    return CrosstalkEdit(
+        candidate_id=str(candidate.get("candidate_id", "")),
+        action=action,
+        start_segment_id=start_id,
+        end_segment_id=end_id,
+        lines=tuple(lines),
+        dropped_segment_ids=tuple(dropped),
+        rationale=str(decision["rationale"]).strip(),
+    )
+
+
+def _crosstalk_segment_ids(
+    report: ValidationReport,
+    where: str,
+    item: object,
+    block: Sequence[str],
+    positions: Mapping[str, int],
+) -> tuple[str, ...] | None:
+    if not isinstance(item, dict):
+        report.error("crosstalk_invalid", f"{where} must be an object")
+        return None
+    ids = item.get("segment_ids")
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or not all(isinstance(value, str) for value in ids)
+    ):
+        report.error(
+            "crosstalk_invalid",
+            f"{where}: segment_ids must be a non-empty list of segment ids",
+        )
+        return None
+    outside = [value for value in ids if value not in block]
+    if outside:
+        report.error(
+            "crosstalk_invalid",
+            f"{where}: {', '.join(outside[:4])} is outside "
+            f"{block[0]}..{block[-1]}",
+            [value for value in outside if value in positions],
+        )
+        return None
+    order = [positions[value] for value in ids]
+    if order != sorted(set(order)):
+        report.error(
+            "crosstalk_invalid",
+            f"{where}: list segment_ids once each, in source order",
+            ids,
+        )
+        return None
+    return tuple(ids)
+
+
+def _check_crosstalk(
+    report: ValidationReport,
+    root: Path,
+    payload: Mapping[str, Any],
+    ranges: Mapping[str, tuple[int, int, str]],
+    segments: Sequence[Mapping[str, Any]],
+) -> None:
+    decisions = payload.get("crosstalk")
+    path = root / CROSSTALK_CANDIDATES
+    if not path.is_file():
+        if decisions:
+            report.error(
+                "crosstalk_invalid",
+                "this project has no crosstalk candidates; remove crosstalk",
+            )
+        return
+    try:
+        candidates = json.loads(path.read_text(encoding="utf-8"))["candidates"]
+        if not isinstance(candidates, list):
+            raise TypeError
+    except (OSError, ValueError, KeyError, TypeError):
+        report.error(
+            "crosstalk_invalid", f"{CROSSTALK_CANDIDATES} is unreadable"
+        )
+        return
+    if decisions is None:
+        decisions = []
+    edits = check_crosstalk_decisions(report, decisions, candidates, segments)
+    positions = {
+        str(segment.get("id", "")): index for index, segment in enumerate(segments)
+    }
+    bridged = {
+        str(item.get("segment_id", ""))
+        for item in payload.get("bridge_edits", []) or []
+        if isinstance(item, dict)
+    }
+    for edit in edits:
+        start = positions[edit.start_segment_id]
+        end = positions[edit.end_segment_id]
+        label = f"{edit.candidate_id} {edit.start_segment_id}..{edit.end_segment_id}"
+        for decision_id, (first, last, _category) in ranges.items():
+            if start <= last and first <= end:
+                report.error(
+                    "crosstalk_invalid",
+                    f"{label} overlaps content edit {decision_id}",
+                    (edit.start_segment_id, edit.end_segment_id),
+                )
+        inside = [
+            str(segments[index].get("id", ""))
+            for index in range(start, end + 1)
+            if str(segments[index].get("id", "")) in bridged
+        ]
+        if inside:
+            report.error(
+                "crosstalk_invalid",
+                f"{label}: bridge edit on {inside[0]} would be replaced by a "
+                "crosstalk line",
+                inside,
+            )
 
 def _check_decision(
     report: ValidationReport,

@@ -19,6 +19,10 @@ export const runCopy = {
     retry: "从最近有效进度继续",
     acknowledgeAudit: "确认听感问题并继续",
     retrying: "正在重新排队",
+    close: "关闭，不再处理",
+    closing: "正在关闭",
+    closeConfirm:
+      "关闭后这次运行不会再重试，也不会生成节目；处理记录会保留。确定关闭吗？",
     history: (count: number) => `历史尝试（${count}）`,
     technical: "技术信息",
     copyDiagnostics: "复制诊断信息",
@@ -42,7 +46,8 @@ export const runCopy = {
     not_applicable: "不适用",
     not_started: "尚未开始",
     superseded: "已由后续重试取代",
-    failed: "失败"
+    failed: "失败",
+    closed: "已关闭"
   },
   steps: {
     source_archive: "来源归档",
@@ -63,6 +68,7 @@ export const runCopy = {
     reused: "将复用",
     preservedTargets: "已完成的翻译段落会保留",
     repeatedTargets: "本次没有可恢复的翻译段落",
+    closedNote: "你已关闭这次运行：不会再重试，也不会生成节目。",
     summaries: {
       translation_stalled:
         "翻译连续两轮没有新增完成段落，系统已暂停，避免继续消耗 tokens。",

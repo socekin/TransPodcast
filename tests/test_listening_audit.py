@@ -59,15 +59,68 @@ def test_truncated_tail_is_a_hard_finding() -> None:
 
 
 def test_repetition_is_a_hard_insertion_finding() -> None:
-    target = "很重要。"
+    target = "这一点很重要。"
     audit = audit_unit(
         observation(
             target_text=target,
-            transcript="很重要很重要很重要很重要",
+            transcript="这一点很重要这一点很重要这一点很重要",
             speech_seconds=2.0,
         )
     )
     assert any(f.kind == "insertion" and f.severity == "hard" for f in audit.findings)
+
+
+def test_short_line_mismatch_alone_is_only_listed() -> None:
+    # The Owner heard "谢谢"; the back-transcription heard "是是".
+    audit = audit_unit(
+        observation(
+            target_text="谢谢。",
+            transcript="是是。",
+            speech_seconds=1.58,
+            longest_internal_silence_seconds=0.02,
+        )
+    )
+    assert {f.kind for f in audit.findings} == {"high_cer", "truncation"}
+    assert {f.severity for f in audit.findings} == {"soft"}
+    assert all("short line" in f.detail for f in audit.findings)
+    assert not audit.hard
+
+
+def test_short_line_without_speech_is_hard() -> None:
+    audit = audit_unit(
+        observation(target_text="谢谢。", transcript="", speech_seconds=0.0)
+    )
+    assert audit.hard
+
+
+def test_short_line_rendered_far_too_long_is_hard() -> None:
+    audit = audit_unit(
+        observation(
+            target_text="对。",
+            transcript="对对对对对对",
+            speech_seconds=3.1,
+        )
+    )
+    assert any(f.kind == "insertion" and f.severity == "hard" for f in audit.findings)
+
+
+def test_short_line_with_long_internal_silence_is_hard() -> None:
+    audit = audit_unit(
+        observation(
+            target_text="没错。",
+            transcript="没。",
+            speech_seconds=1.6,
+            longest_internal_silence_seconds=1.4,
+        )
+    )
+    assert any(f.kind == "truncation" and f.severity == "hard" for f in audit.findings)
+
+
+def test_six_character_line_keeps_the_hard_mismatch_rule() -> None:
+    audit = audit_unit(
+        observation(target_text="这一点很重要", transcript="这一点", speech_seconds=1.2)
+    )
+    assert any(f.kind == "truncation" and f.severity == "hard" for f in audit.findings)
 
 
 def test_untranslated_english_run_is_soft_english_leakage() -> None:

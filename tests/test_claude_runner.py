@@ -244,6 +244,22 @@ def test_unready_runner_refuses_to_run(monkeypatch: pytest.MonkeyPatch) -> None:
             "",
             "auth",
         ),
+        (
+            {
+                "api_error_status": None,
+                "result": (
+                    "Failed to authenticate: OAuth session expired and could "
+                    "not be refreshed"
+                ),
+            },
+            "",
+            "auth",
+        ),
+        (
+            {"subtype": "error_during_execution", "errors": ["authentication_failed"]},
+            "",
+            "auth",
+        ),
         ({"api_error_status": 500, "result": "API Error: 500"}, "", "provider"),
         (
             {"subtype": "error_max_structured_output_retries", "result": ""},
@@ -504,6 +520,32 @@ def test_isolated_environment_drops_host_session_state() -> None:
     ]
 
 
+def test_isolated_environment_prefers_the_token_file_over_inherited_state() -> None:
+    environment = isolated_environment(
+        {"PATH": "/usr/bin", "CLAUDE_CODE_OAUTH_TOKEN": "inherited"},
+        oauth_token="from-file",
+    )
+
+    assert environment["CLAUDE_CODE_OAUTH_TOKEN"] == "from-file"
+
+
+def test_child_environment_rereads_the_token_file_on_each_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    token_file = tmp_path / "claude-oauth-token"
+    runner = ClaudeRunner("claude", oauth_token_path=token_file)
+
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in runner.child_environment()
+
+    token_file.write_text("first-token\n", encoding="utf-8")
+    assert runner.child_environment()["CLAUDE_CODE_OAUTH_TOKEN"] == "first-token"
+
+    token_file.write_text("renewed-token", encoding="utf-8")
+    assert runner.child_environment()["CLAUDE_CODE_OAUTH_TOKEN"] == "renewed-token"
+
+
 def readiness_cli(
     *,
     auth: dict[str, Any] | None = None,
@@ -571,6 +613,44 @@ def test_readiness_fails_when_logged_out(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(AgentInvocationError) as failure:
         runner.run(instructions="Reply.", source_data={}, schema=SCHEMA)
     assert failure.value.kind == "auth"
+
+
+def test_readiness_and_calls_authenticate_with_the_token_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "claude-oauth-token"
+    token_file.write_text("service-token\n", encoding="utf-8")
+    environments: list[dict[str, str]] = []
+    probe = readiness_cli(
+        auth={"loggedIn": True, "authMethod": "oauth_token"},
+    )
+
+    def fake_run(
+        command: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        environments.append(kwargs["env"])
+        if "--print" in command:
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(fixture("single-shot")), ""
+            )
+        result: subprocess.CompletedProcess[str] = probe(command, **kwargs)
+        return result
+
+    monkeypatch.setattr(
+        "transpodcast.adapters.claude.shutil.which", lambda _: "/bin/claude"
+    )
+    monkeypatch.setattr("transpodcast.adapters.claude.subprocess.run", fake_run)
+    runner = ClaudeRunner("claude", oauth_token_path=token_file)
+
+    runner.run(instructions="Reply.", source_data={}, schema=SCHEMA)
+
+    assert runner.auth_method == "oauth_token"
+    assert len(environments) == 4
+    assert {
+        environment["CLAUDE_CODE_OAUTH_TOKEN"] for environment in environments
+    } == {"service-token"}
 
 
 def test_readiness_fails_when_a_required_flag_is_missing(

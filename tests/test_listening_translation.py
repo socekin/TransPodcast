@@ -47,6 +47,8 @@ from transpodcast.pipeline_versions import (
     SPEECH_PIPELINE_V20,
     SPEECH_PIPELINE_V21,
     SPEECH_PIPELINE_V22,
+    SPEECH_PIPELINE_V23,
+    SPEECH_PIPELINE_V24,
 )
 from transpodcast.translation_projects import mark_translation_project_reprocess
 
@@ -824,3 +826,33 @@ def test_segment_retranslation_keeps_the_episode_policy(
             "written_form": "Dots",
         }
     assert result.policy_version == policy_version
+
+
+def test_crosstalk_runs_give_the_reviewer_crosstalk_candidates(
+    tmp_path: Path,
+) -> None:
+    runner = ListeningProjectRunner()
+    result = CodexTranslationAdapter(
+        runner,  # type: ignore[arg-type]
+        project_root=tmp_path,
+    ).translate(_candidate(SPEECH_PIPELINE_V23))
+
+    (project,) = (tmp_path / "run-88").iterdir()
+    assert project.name.endswith("-translation-policy-v5-crosstalk")
+    assert result.policy_version == "translation-policy-v5-crosstalk"
+    policy = translation_policy_for_pipeline(SPEECH_PIPELINE_V24)
+    assert policy.crosstalk is True
+    assert policy.listening is True
+    review = project / "review"
+    guidance = review.joinpath("AGENTS.md").read_text()
+    assert guidance.startswith(LISTENING_AGENT_GUIDANCE)
+    assert "## Crosstalk (Reviewer)" in guidance
+    assert "unattributable_overlap" in guidance
+    assert "source/crosstalk-candidates.json" in runner.invocations[-1][2]
+    candidates = json.loads(
+        review.joinpath("source", "crosstalk-candidates.json").read_text()
+    )
+    assert candidates["policy_version"] == "crosstalk-candidates-v1"
+    assert isinstance(candidates["candidates"], list)
+    audit = json.loads(result.audit_json)
+    assert audit["listening"]["policy_version"] == "translation-policy-v5-crosstalk"

@@ -59,6 +59,7 @@ provider blocks processing.
 | `TRANSPODCAST_CLAUDE_EXECUTABLE` | Claude Code CLI executable (default `claude`) |
 | `TRANSPODCAST_CLAUDE_MODEL` | Optional Claude Code model or alias |
 | `TRANSPODCAST_CLAUDE_EFFORT` | Optional effort: `low`, `medium`, `high`, `xhigh`, or `max` |
+| `TRANSPODCAST_CLAUDE_OAUTH_TOKEN_PATH` | Claude Code token file for the services (default `data/secrets/claude-oauth-token`) |
 
 Install and sign in to each CLI as the same macOS user that runs TransPodcast.
 Verify Codex with `codex --version` and `codex login status`, and Claude Code
@@ -70,9 +71,37 @@ and [Claude Code setup guide](https://code.claude.com/docs/en/setup).
 TransPodcast starts Claude Code in an isolated mode that ignores user and
 project settings, CLAUDE.md files, MCP servers, skills, hooks, and plugins.
 It does not pass `ANTHROPIC_API_KEY` to the CLI, so sign in with a Claude
-subscription account (or provide `CLAUDE_CODE_OAUTH_TOKEN` in the service
-environment). Use a Claude Code version that supports the isolation flags;
-readiness reports Claude Code as unavailable otherwise.
+subscription account. Use a Claude Code version that supports the isolation
+flags; readiness reports Claude Code as unavailable otherwise.
+
+### Claude Code token file
+
+Give the API and worker their own one-year token instead of relying on the
+interactive `/login` credential. That credential lives in the macOS Keychain
+and is shared and refreshed by every `claude` session of the same user; when
+many interactive sessions refresh it at once it can stop working, Setup
+Readiness then fails, and background processing pauses. A `setup-token` token
+never refreshes, so nothing done in an interactive session can invalidate it.
+
+```shell
+claude setup-token
+```
+
+The command asks for browser approval and prints the token once. Copy it, then
+write it to the configured path without echoing it:
+
+```shell
+(umask 077; pbpaste > data/secrets/claude-oauth-token)
+(export CLAUDE_CODE_OAUTH_TOKEN="$(cat data/secrets/claude-oauth-token)"; claude auth status)
+```
+
+The status must report `"authMethod": "oauth_token"`. Every Claude call reads
+the file again, so a new or renewed token takes effect within a minute without
+a restart, and **Settings** shows Claude Code as signed in with the long-lived
+token. The token expires one year after it is created: note the date and
+renew it before then. Never export `CLAUDE_CODE_OAUTH_TOKEN` from a shell
+profile, because interactive Claude Code sessions would switch to it. The file
+is ignored by Git and excluded from State Backups.
 
 ## Modal speech pipeline
 

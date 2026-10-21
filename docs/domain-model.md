@@ -15,6 +15,14 @@ Translation Agent, and the TransPodcast web interface used to configure sources,
 review decisions, monitor Processing Runs, and manage publications.
 _Avoid_: Cloud control plane
 
+**Agent CLI**:
+The `transpodcast` command through which a local Agent (Codex, Claude Code,
+or another coding agent) adds an episode or follows a Source Channel for the
+Owner, reads progress, and starts a waiting Run only when the Owner asked for
+it in conversation. It exposes no delete, reprocess, or publication action;
+the Processing Queue shows which Agent added an episode.
+_Avoid_: public API, remote access, Agent Provider
+
 **Setup Readiness**:
 The verified state in which the selected Agent Provider's CLI, the dedicated Modal Environment, Cloudflare publication resources, the Private Feed, and at least one Source Channel are configured. The `agent` entry reports the selected Agent Provider and the status of both Agent CLIs (Codex and Claude Code); only the selected one blocks readiness. Telegram is reported separately as an optional notification channel and never blocks background processing or Web publication.
 _Avoid_: Application health, onboarding progress, Processing Run status
@@ -130,8 +138,12 @@ A Translated Episode that the Owner chose not to add to the Private Feed while r
 _Avoid_: Deleted episode, failed Processing Run, ignored Candidate Video
 
 **Review Queue**:
-Processing Runs that failed a Quality Gate or contain unresolved uncertainty and therefore require an Owner decision before publication.
+Processing Runs that failed a Quality Gate or contain unresolved uncertainty and therefore require an Owner decision before publication: retry from the latest checkpoint, or close.
 _Avoid_: Failed jobs, inbox, Triage Decision
+
+**Closed Processing Run**:
+A Processing Run the Owner closed from the Review Queue without producing an episode. It keeps its history and is never retried, so its Candidate Video does not enter processing again.
+_Avoid_: Cancelled run, deleted run, Unpublished Episode
 
 **Source Channel**:
 A YouTube channel manually added by the Owner for monitoring during the initial product phase.
@@ -318,8 +330,36 @@ available. Unresolved short-response identity remains explicit disputed evidence
 complete detected-region coverage is not an accuracy guarantee.
 _Avoid_: guaranteed overlap accuracy, renderer-default change, historical reprocessing
 
-**Speech Pipeline V21 / V22**:
+**Speech Pipeline V23 / V24**:
 The current Speech Pipelines for new Runs:
+`transpodcast-modal-pipeline-v23` with IndexTTS 2.0 and
+`transpodcast-modal-pipeline-v24` with IndexTTS 2.5. They keep every V21/V22
+feature and add Sentence Integrity after the Agent ownership layer and the
+Reviewer's Crosstalk Edits under `translation-policy-v5-crosstalk`.
+_Avoid_: original audio, overlapping dub, reprocessed history
+
+**Sentence Integrity**:
+The V23 rule that returns a short foreign owner run (at most 3 words and
+1.2 s) to the Speaker who owns at least 60% of the sentence's speech, so one
+sentence is not voiced by two Speakers. Backchannels and answered runs keep
+their Speaker; each move is a Decision Record.
+_Avoid_: backchannel folding, discourse-only ownership
+
+**Crosstalk Candidate**:
+A program-detected zone where three or more Speaker changes start within
+6 s. Every candidate needs a Reviewer decision; the rule may be generous.
+_Avoid_: overlap region, Crosstalk Edit
+
+**Crosstalk Edit**:
+The Reviewer's decision for part of a Crosstalk Candidate: reassemble its
+segments into Crosstalk Lines, complete sentences each voiced by one Speaker
+in source order, losing nothing; or, only where attribution and order
+cannot be recovered, trim fragments that are both unattributable and empty
+of information. Audio and transcript follow the lines.
+_Avoid_: Original Audio Span, summary, importance-based cut
+
+**Speech Pipeline V21 / V22**:
+The previous Speech Pipelines for new Runs:
 `transpodcast-modal-pipeline-v21` with IndexTTS 2.0 and
 `transpodcast-modal-pipeline-v22` with IndexTTS 2.5. They keep every V19/V20
 rendering feature. They use V21 Source Analysis: deterministic ownership,
@@ -368,7 +408,9 @@ _Avoid_: Publication Audio, render cache, State Backup
 The automatic post-render check of every unit, using Mandarin
 back-transcription, speech-rate and silence bounds, and voice consistency. A
 hard finding is re-rendered once; a remaining one requires the Owner's Review
-Queue decision. Soft findings are listed only.
+Queue decision. Soft findings are listed only. On a short line, a
+back-transcription mismatch is hard only when the line's speech is also
+missing, far too long, or broken by a long silence.
 _Avoid_: human review, Quality Gate replacement, translation review
 
 **Speaker Ownership Risk Region**:

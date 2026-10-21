@@ -12,8 +12,8 @@ from transpodcast.pipeline_versions import (
     SPEECH_PIPELINE_V16,
     SPEECH_PIPELINE_V17,
     SPEECH_PIPELINE_V18,
-    SPEECH_PIPELINE_V21,
-    SPEECH_PIPELINE_V22,
+    SPEECH_PIPELINE_V23,
+    SPEECH_PIPELINE_V24,
     pipeline_version_for_speech_model,
     speech_model_for_pipeline_version,
 )
@@ -26,8 +26,8 @@ from transpodcast.testing import FakeTranslationAdapter
 
 
 def test_new_runs_keep_renderer_choice_with_versioned_ownership() -> None:
-    assert pipeline_version_for_speech_model("indextts2") == SPEECH_PIPELINE_V21
-    assert pipeline_version_for_speech_model("indextts25") == SPEECH_PIPELINE_V22
+    assert pipeline_version_for_speech_model("indextts2") == SPEECH_PIPELINE_V23
+    assert pipeline_version_for_speech_model("indextts25") == SPEECH_PIPELINE_V24
     assert speech_model_for_pipeline_version(SPEECH_PIPELINE_V15) == "indextts2"
     assert speech_model_for_pipeline_version(SPEECH_PIPELINE_V16) == "indextts25"
     assert speech_model_for_pipeline_version(SPEECH_PIPELINE_V17) == "indextts2"

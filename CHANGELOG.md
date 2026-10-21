@@ -6,6 +6,73 @@ uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-21
+
+### Added
+
+- Crosstalk handling in Speech Pipeline V23 (IndexTTS 2.0) and V24
+  (IndexTTS 2.5), selected for new Processing Runs. Sentence Integrity
+  returns a short foreign owner run to the Speaker who owns the sentence, so
+  one sentence is not voiced by two Speakers; backchannels and answered runs
+  keep their Speaker. Crosstalk Candidates (three or more Speaker changes
+  within 6 s) each need a Reviewer decision under
+  `translation-policy-v5-crosstalk`: reassemble the segments into complete
+  per-Speaker sentences in source order, or, only where attribution cannot be
+  recovered, trim fragments without information. No original English audio
+  is kept.
+- `transpodcast` command for local agents (Codex, Claude Code, and others):
+  `add`, `start`, `channel add`, `status`, and `list` call the local Control
+  API. An added episode shows which agent added it and a Modal cost
+  estimate; an agent starts a waiting Run only when asked. Deleting,
+  reprocessing, and publishing stay in TransPodcast Host.
+- Close a Review Queue Run from its Run page. A Closed Processing Run is
+  never retried, leaves the Episode Library, and keeps its stages, attempts,
+  costs, and error in Run history.
+- Claude Code token file (`TRANSPODCAST_CLAUDE_OAUTH_TOKEN_PATH`, default
+  `data/secrets/claude-oauth-token`): the API and worker pass a one-year
+  `claude setup-token` token to every Claude Code call instead of the shared
+  interactive Keychain login, which interactive sessions can invalidate. The
+  file is read on every call, so renewing it needs no restart.
+- Settings shows how each Agent CLI is signed in.
+
+### Changed
+
+- Listening Audit policy `listening-audit-v2`: on a line of fewer than six
+  spoken syllables, a back-transcription mismatch (high CER, truncation, or
+  insertion) is listed as a soft "short line" finding unless the line's
+  speech is shorter than 0.15 s, longer than 2.5 s, or broken by a silence
+  over 1.2 s. One or two misheard syllables no longer send an episode to the
+  Review Queue or trigger a re-render. Longer lines keep the v1 rules.
+
+### Fixed
+
+- Qwen3-ASR runaway repetition: the Modal transcriber applies the audio
+  encoder's attention-window mask, transcribes its own fixed-length chunks,
+  re-transcribes a runaway chunk in short pieces, and drops what still runs
+  away. Reprocessing an episode whose stored transcript holds such a loop
+  transcribes it again instead of reusing it.
+- A Claude Code call that fails with an expired or unrefreshable sign-in is
+  recorded as an Agent sign-in failure instead of a retried provider error.
+- A translation worksheet that ends with extra blank lines no longer fails
+  validation.
+
+### Upgrade notes
+
+- Wait until processing is idle, then run `make setup` to install the new
+  command and rebuild TransPodcast Host.
+- Redeploy the Modal applications with `./deploy/modal-deploy.sh`; the
+  Qwen3-ASR application changed.
+- If Claude Code is the processing Agent, create the Claude Code token file
+  (see `docs/configuration.md`).
+- Existing Processing Runs keep their recorded Pipeline Version and Listening
+  Audit results; only new Runs use V23/V24.
+
+### Security
+
+- Refresh dependencies with published advisories: Pillow 13.0.0 (the
+  supported range is now `>=13,<14`), aiohttp 3.14.5, certifi 2026.10.19,
+  and Vite 6.4.5 for the development server.
+
 ## [0.2.0] - 2026-10-14
 
 ### Added
@@ -148,6 +215,7 @@ uses semantic versioning for public releases.
 - CI includes deterministic tests, documentation validation, secret scanning,
   dependency audits, and CodeQL analysis.
 
-[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/socekin/TransPodcast/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/socekin/TransPodcast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/socekin/TransPodcast/releases/tag/v0.1.0

@@ -67,6 +67,22 @@ class SourceUrlRequest(BaseModel):
     url: HttpUrl
 
 
+class SourceVideoImportRequest(BaseModel):
+    # The local Agent submitting through the `transpodcast` CLI, e.g. "codex".
+    requested_by: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9-]{0,31}$",
+    )
+
+
+class ProcessingRunStartRequest(BaseModel):
+    # The local Agent starting the Run at the Owner's request.
+    requested_by: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9-]{0,31}$",
+    )
+
+
 class SourceVideoImport(BaseModel):
     url: HttpUrl | None = None
     youtube_video_id: str | None = Field(default=None, max_length=64)
@@ -144,6 +160,7 @@ class DirectSourceVideoImportResponse(BaseModel):
     processing_run_id: int | None
     episode_id: int | None
     reused: bool
+    estimated_cost_usd: float | None = None
     source_channel: ImportedSourceChannelResponse
 
 
@@ -639,9 +656,13 @@ def create_app(dependencies: AppDependencies) -> FastAPI:
     def import_resolved_source_video(
         resolution_id: str,
         response: Response,
+        payload: SourceVideoImportRequest | None = None,
     ) -> DirectSourceVideoImportResponse:
         try:
-            result = service.import_source_video_from_resolution(resolution_id)
+            result = service.import_source_video_from_resolution(
+                resolution_id,
+                requested_by=payload.requested_by if payload else None,
+            )
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (RuntimeError, ValueError) as error:
@@ -692,14 +713,24 @@ def create_app(dependencies: AppDependencies) -> FastAPI:
     @app.post("/api/v1/processing-runs/{processing_run_id}:start")
     def start_processing_run(
         processing_run_id: int,
+        payload: ProcessingRunStartRequest | None = None,
     ) -> dict[str, object]:
         try:
-            run = service.start_processing_run(processing_run_id)
+            run = service.start_processing_run(
+                processing_run_id,
+                requested_by=payload.requested_by if payload else None,
+            )
+            estimate = service.estimated_run_cost_usd(processing_run_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except RuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        return {"id": run.id, "state": run.status, "stage": run.stage}
+        return {
+            "id": run.id,
+            "state": run.status,
+            "stage": run.stage,
+            "estimated_cost_usd": estimate,
+        }
 
     @app.post("/api/v1/processing-runs:start-all")
     def start_all_processing_runs() -> dict[str, int]:
@@ -954,6 +985,23 @@ def create_app(dependencies: AppDependencies) -> FastAPI:
     ) -> ProcessingRunDetailResponse:
         try:
             run = service.retry_processing_run(processing_run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return ProcessingRunDetailResponse.model_validate(
+            service.processing_run_detail(run.id)
+        )
+
+    @app.post(
+        "/api/v1/processing-runs/{processing_run_id}:close",
+        response_model=ProcessingRunDetailResponse,
+    )
+    def close_processing_run(
+        processing_run_id: int,
+    ) -> ProcessingRunDetailResponse:
+        try:
+            run = service.close_processing_run(processing_run_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except RuntimeError as error:

@@ -532,6 +532,18 @@
   color: var(--danger);
 }
 
+.run-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.run-error-card .run-closed-note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .run-summary-card {
   display: flex;
   align-items: center;

@@ -11,4 +11,5 @@ export enum EpisodeLibraryState {
   PUBLISHED = 'published',
   UNPUBLISHED = 'unpublished',
   TAKEN_DOWN = 'taken_down',
+  CLOSED = 'closed',
 }

@@ -183,6 +183,32 @@ def test_harvest_rejects_any_skeleton_violation(mutate, message) -> None:
         harvest_translation_worksheet(worksheet, edited)
 
 
+@pytest.mark.parametrize(
+    "ending",
+    ["", "\n", "\n\n", "\n\n  \n"],
+)
+def test_harvest_ignores_blank_lines_at_the_end(ending: str) -> None:
+    # A recorded Run failed only because one worksheet ended with an extra newline.
+    worksheet = render_translation_worksheet(_SOURCE_DATA, _SEGMENTS)
+    edited = _translate_targets(worksheet).rstrip("\n") + ending
+
+    targets = harvest_translation_worksheet(worksheet, edited)
+
+    assert list(targets) == ["seg-0001", "seg-0002", "seg-0003"]
+
+
+def test_harvest_errors_name_the_first_changed_line() -> None:
+    worksheet = render_translation_worksheet(_SOURCE_DATA, _SEGMENTS)
+    lines = _translate_targets(worksheet).splitlines()
+    edited = "\n".join([*lines[:6], "A stray note.", *lines[6:]])
+
+    with pytest.raises(
+        ValueError,
+        match=r"structure was modified: line 7: .* lines, expected",
+    ):
+        harvest_translation_worksheet(worksheet, edited)
+
+
 def test_reordered_blocks_are_rejected() -> None:
     worksheet = render_translation_worksheet(_SOURCE_DATA, _SEGMENTS)
     edited = _translate_targets(worksheet).replace(

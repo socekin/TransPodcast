@@ -102,8 +102,10 @@ claude auth status
 TransPodcast runs Claude Code isolated from personal settings and does not pass
 `ANTHROPIC_API_KEY`, so sign in with a Claude subscription account. After
 TransPodcast Host starts, open **Settings** and select **Claude** as the
-processing Agent. See the official
-[Claude Code setup guide](https://code.claude.com/docs/en/setup) and
+processing Agent. For background processing, also create the services' own
+[Claude Code token file](configuration.md#claude-code-token-file), so
+interactive `claude` sessions cannot invalidate the services' login. See the
+official [Claude Code setup guide](https://code.claude.com/docs/en/setup) and
 [Configuration](configuration.md#agent-providers).
 
 ## 4. Start TransPodcast Host
@@ -183,6 +185,34 @@ In TransPodcast Host:
 
 The worker resumes from the latest valid checkpoint after a restart. It does
 not intentionally rerun completed GPU stages.
+
+A Run in the Review Queue can be retried from its latest checkpoint or closed.
+Closing keeps its stages, attempts, costs, and error as history, removes it
+from the Episode Library, and never retries it.
+
+### Let a local Agent add episodes
+
+Local coding agents (Codex, Claude Code, or another agent that runs shell
+commands) can hand episodes to TransPodcast with the `transpodcast` command,
+which calls the Control API on `127.0.0.1:8000`:
+
+```shell
+transpodcast add https://www.youtube.com/watch?v=VIDEO_ID --from codex [--start]
+transpodcast start RUN_ID --from codex
+transpodcast channel add https://www.youtube.com/@channel
+transpodcast status [RUN_ID]
+transpodcast list
+```
+
+An added episode appears in the Processing Queue as added by that Agent, with
+a Modal cost estimate from recent Runs. While Manual Processing is on, it waits
+for a start: yours in TransPodcast Host, or an Agent's when you asked it to
+start the episode. Deleting, reprocessing, and publishing stay in TransPodcast
+Host. Make the command available to every Agent once per host:
+
+```shell
+ln -sfn "$PWD/.venv/bin/transpodcast" ~/.local/bin/transpodcast
+```
 
 ## 8. Subscribe in Apple Podcasts
 

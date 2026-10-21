@@ -9,6 +9,12 @@ A unit without a transcript (the back-transcription was unavailable) is still
 scored on its local energy measurements, so a duration anomaly is caught even
 when the remote audit models cannot run. ``audit_unavailable`` findings make
 every missing measurement explicit; they are listed and never block.
+
+A short line (fewer spoken syllables than the speech-rate checks need) is too
+short for a back-transcription to judge on its own: a one- or two-syllable
+clip has no context, so a single misheard syllable reaches the hard CER bound
+(a recorded episode: "xiexie" heard as "shishi"). Its transcript findings are hard
+only when its energy is abnormal too.
 """
 
 from __future__ import annotations
@@ -17,10 +23,10 @@ import math
 import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
-LISTENING_AUDIT_POLICY_VERSION = "listening-audit-v1"
+LISTENING_AUDIT_POLICY_VERSION = "listening-audit-v2"
 
 Severity = Literal["hard", "soft"]
 FindingKind = Literal[
@@ -50,6 +56,12 @@ class ListeningAuditPolicy:
     hard_duration_ratio: float = 3.0
     maximum_internal_silence_seconds: float = 1.2
     voice_drift_margin: float = 0.05
+    # A line shorter than ``minimum_rate_characters`` keeps a hard transcript
+    # finding only when its speech is missing, far too long, or broken by a
+    # long internal silence. Normal short lines in four recorded episodes spoke for
+    # 0.26-2.29 s with at most 0.52 s of internal silence.
+    short_line_minimum_speech_seconds: float = 0.15
+    short_line_maximum_speech_seconds: float = 2.5
 
 
 DEFAULT_LISTENING_AUDIT_POLICY = ListeningAuditPolicy()
@@ -133,6 +145,7 @@ _PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _LATIN_TOKEN = re.compile(r"[a-z][a-z0-9'.+-]*")
 _LATIN_RUN = re.compile(r"[a-z][a-z0-9'.+-]*(?:[\s,]+[a-z][a-z0-9'.+-]*)*")
 _MINIMUM_LEAKED_TOKENS = 3
+_TRANSCRIPT_FINDINGS = frozenset({"high_cer", "truncation", "insertion"})
 _SPOKEN_CHARACTER = re.compile(r"[一-鿿]|[a-z0-9]")
 
 
@@ -263,10 +276,31 @@ def audit_unit(
         else _score_transcript(observation, policy, flag)
     )
     _score_energy(observation, policy, flag)
+    if _short_line_without_energy_anomaly(observation, policy):
+        findings = [
+            replace(finding, severity="soft", detail=f"{finding.detail} (short line)")
+            if finding.kind in _TRANSCRIPT_FINDINGS and finding.severity == "hard"
+            else finding
+            for finding in findings
+        ]
     return UnitAudit(
         observation.unit_id,
         round(cer, 4) if cer is not None else None,
         tuple(findings),
+    )
+
+
+def _short_line_without_energy_anomaly(
+    observation: UnitObservation,
+    policy: ListeningAuditPolicy,
+) -> bool:
+    return (
+        spoken_length(observation.target_text) < policy.minimum_rate_characters
+        and policy.short_line_minimum_speech_seconds
+        <= observation.speech_seconds
+        <= policy.short_line_maximum_speech_seconds
+        and observation.longest_internal_silence_seconds
+        <= policy.maximum_internal_silence_seconds
     )
 
 

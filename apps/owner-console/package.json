@@ -1,6 +1,6 @@
 {
   "name": "owner-console",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -36,7 +36,7 @@
     "openapi-typescript-codegen": "^0.31.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "6.4.3",
+    "vite": "6.4.5",
     "vitest": "^4.1.10"
   }
 }

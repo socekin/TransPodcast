@@ -36,8 +36,8 @@ from transpodcast.adapters.claude import (
     ClaudeRunner,
     envelope_model,
     envelope_usage,
-    isolated_environment,
 )
+from transpodcast.config import TransPodcastSettings
 
 SENTINEL = "TRANSPODCAST-CANARY-SENTINEL"
 PERSONAL_MARKERS = (
@@ -100,7 +100,11 @@ def main() -> int:
         help="also run one probe without isolation to prove leak detection",
     )
     args = parser.parse_args()
-    runner = ClaudeRunner(args.executable, model=args.model)
+    runner = ClaudeRunner(
+        args.executable,
+        model=args.model,
+        oauth_token_path=TransPodcastSettings().claude_oauth_token_path,
+    )
     if not runner.readiness():
         print("Claude Code CLI is not ready", file=sys.stderr)
         return 2
@@ -133,6 +137,7 @@ def single_shot_init_check(runner: ClaudeRunner) -> dict[str, Any]:
             runner.single_shot_command(schema),
             prompt="Set reply to OK.",
             cwd=Path(temp),
+            environment=runner.child_environment(),
         )
     init = init_event(events)
     failures = config_failures(
@@ -181,7 +186,12 @@ def project_check(runner: ClaudeRunner) -> dict[str, Any]:
         session_index = command.index("--session-id")
         # A canary turn must not leave a resumable transcript behind.
         command[session_index : session_index + 2] = ["--no-session-persistence"]
-        events = stream(command, prompt=PROJECT_INSTRUCTIONS, cwd=root)
+        events = stream(
+            command,
+            prompt=PROJECT_INSTRUCTIONS,
+            cwd=root,
+            environment=runner.child_environment(),
+        )
     init = init_event(events)
     failures = config_failures(
         events,
@@ -214,7 +224,7 @@ def control_check(runner: ClaudeRunner) -> dict[str, Any]:
             command,
             prompt=REPORT_INSTRUCTIONS,
             cwd=Path(temp),
-            isolate_environment=False,
+            environment=None,
         )
     init = init_event(events)
     leaks = config_failures(
@@ -237,7 +247,7 @@ def stream(
     *,
     prompt: str,
     cwd: Path,
-    isolate_environment: bool = True,
+    environment: dict[str, str] | None,
 ) -> list[dict[str, Any]]:
     streaming = list(command)
     index = streaming.index("--output-format")
@@ -250,7 +260,7 @@ def stream(
         check=False,
         cwd=cwd,
         timeout=900,
-        env=isolated_environment() if isolate_environment else None,
+        env=environment,
     )
     events: list[dict[str, Any]] = []
     for line in completed.stdout.splitlines():

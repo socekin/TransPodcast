@@ -417,6 +417,9 @@ def analyze(request: dict[str, Any], output_root: Path) -> dict[str, Any]:
     }
     canonical["speaker_consolidation"] = speaker_consolidation
     canonical["boundary_adjudication"] = boundary_adjudication
+    if transcription.get("asr_guard") is not None:
+        # Re-transcribed and dropped Qwen3-ASR runaway chunks (asr_guard).
+        boundary_adjudication["asr_guard"] = transcription["asr_guard"]
     return {
         **canonical,
         "pipeline_version": analysis_version,

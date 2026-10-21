@@ -35,6 +35,9 @@ class TransPodcastSettings(BaseSettings):
     claude_executable: str = "claude"
     claude_model: str = ""
     claude_effort: str = ""
+    # One-year token from ``claude setup-token``; when the file is absent the
+    # CLI falls back to the shared interactive Keychain login.
+    claude_oauth_token_path: Path = Path("data/secrets/claude-oauth-token")
     youtube_proxy_url: str = ""
     youtube_browser_executable: Path = Path(
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"

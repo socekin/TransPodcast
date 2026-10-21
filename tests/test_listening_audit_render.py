@@ -60,6 +60,17 @@ class _AuditFixture(_RenderFixture):
         self.clip_owner[measure_clip(path).wav_bytes] = (unit_id, variant)
         return path
 
+    def mishear(
+        self, unit_id: str, variant: str, transcript: str = "完全无关的内容"
+    ) -> None:
+        """A broken render of a short fixture line: misheard and far too long.
+
+        Every fixture line is short, so a transcript mismatch alone is only
+        listed; the long speech keeps the finding hard.
+        """
+        self.transcripts[(unit_id, variant)] = transcript
+        self.speech_seconds[(unit_id, variant)] = 3.0
+
     def fake_render_sharded(
         self,
         _source_wav: Path,
@@ -270,7 +281,7 @@ def test_complete_render_audits_every_clip_in_one_call_per_model(
         (16_000, 1, 2)
     }
     payload = _audit(result)
-    assert payload["policy_version"] == "listening-audit-v1"
+    assert payload["policy_version"] == "listening-audit-v2"
     assert payload["status"] == "complete"
     assert payload["scope"] == "episode"
     assert payload["unit_count"] == len(_SEGMENTS)
@@ -329,7 +340,7 @@ def test_hard_finding_rerenders_only_that_unit_once_with_a_new_seed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _AuditFixture(tmp_path, monkeypatch)
-    fixture.transcripts[("seg-0003", "first")] = "完全无关的内容"
+    fixture.mishear("seg-0003", "first")
 
     result = fixture.render_audited()
 
@@ -370,8 +381,8 @@ def test_hard_finding_that_survives_the_retry_blocks_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _AuditFixture(tmp_path, monkeypatch)
-    fixture.transcripts[("seg-0003", "first")] = "完全无关的内容"
-    fixture.transcripts[("seg-0003", "retry")] = "还是不对的东西"
+    fixture.mishear("seg-0003", "first")
+    fixture.mishear("seg-0003", "retry", "还是不对的东西")
 
     payload = _audit(fixture.render_audited())
 
@@ -385,7 +396,7 @@ def test_failed_retry_keeps_the_original_clip_and_reports_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _AuditFixture(tmp_path, monkeypatch)
-    fixture.transcripts[("seg-0003", "first")] = "完全无关的内容"
+    fixture.mishear("seg-0003", "first")
     fixture.fail_methods.add("render")
 
     result = fixture.render_audited()
@@ -452,7 +463,7 @@ def test_segment_revision_audits_only_the_new_clip_and_keeps_retry_seeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _AuditFixture(tmp_path, monkeypatch)
-    fixture.transcripts[("seg-0002", "first")] = "完全无关的内容"
+    fixture.mishear("seg-0002", "first")
     prior = fixture.render_audited()
     assert prior["render_settings"]["unit_seed_overrides"] == {"seg-0002": 43}
     fixture.calls.clear()
@@ -649,7 +660,7 @@ def test_readiness_reports_missing_audit_methods_without_blocking(
     assert response["ready"] is True
     assert response["listening_audit"] == {
         "available": False,
-        "policy_version": "listening-audit-v1",
+        "policy_version": "listening-audit-v2",
         "missing_methods": ["Qwen3Transcriber.transcribe_clips"],
     }
     deployed["Qwen3Transcriber"].add("transcribe_clips")

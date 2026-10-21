@@ -15,11 +15,18 @@ SPEECH_PIPELINE_V19 = "transpodcast-modal-pipeline-v19"
 SPEECH_PIPELINE_V20 = "transpodcast-modal-pipeline-v20"
 # V21 (IndexTTS 2.0) and V22 (IndexTTS 2.5) keep everything V19/V20 have and
 # use V21 Source Analysis, which owns words with the deterministic ownership
-# policy before the V17 continuity regions are built. New Runs select them.
+# policy before the V17 continuity regions are built. No new Run selects them
+# since V23/V24 were released.
 SPEECH_PIPELINE_V21 = "transpodcast-modal-pipeline-v21"
 SPEECH_PIPELINE_V22 = "transpodcast-modal-pipeline-v22"
+# V23 (IndexTTS 2.0) and V24 (IndexTTS 2.5) keep V21 Source Analysis and add
+# crosstalk handling: Sentence Integrity after the Agent ownership layer and
+# the Reviewer's Crosstalk Edits. New Runs select them.
+SPEECH_PIPELINE_V23 = "transpodcast-modal-pipeline-v23"
+SPEECH_PIPELINE_V24 = "transpodcast-modal-pipeline-v24"
+CROSSTALK_PIPELINES = frozenset({SPEECH_PIPELINE_V23, SPEECH_PIPELINE_V24})
 DETERMINISTIC_OWNERSHIP_PIPELINES = frozenset(
-    {SPEECH_PIPELINE_V21, SPEECH_PIPELINE_V22}
+    {SPEECH_PIPELINE_V21, SPEECH_PIPELINE_V22, *CROSSTALK_PIPELINES}
 )
 RHYTHM_PIPELINES = frozenset(
     {SPEECH_PIPELINE_V19, SPEECH_PIPELINE_V20, *DETERMINISTIC_OWNERSHIP_PIPELINES}
@@ -36,6 +43,7 @@ INDEXTTS25_PIPELINES = frozenset(
         SPEECH_PIPELINE_V18,
         SPEECH_PIPELINE_V20,
         SPEECH_PIPELINE_V22,
+        SPEECH_PIPELINE_V24,
     }
 )
 
@@ -45,17 +53,17 @@ SUPPORTED_SPEECH_MODELS = frozenset(
     {SPEECH_MODEL_INDEXTTS2, SPEECH_MODEL_INDEXTTS25}
 )
 
-CURRENT_SPEECH_PIPELINE_VERSION = SPEECH_PIPELINE_V21
+CURRENT_SPEECH_PIPELINE_VERSION = SPEECH_PIPELINE_V23
 
 
 def pipeline_version_for_speech_model(speech_model: str) -> str:
-    # New Runs add deterministic ownership, the Span Identity Check,
-    # sparse-label merge, and listening-oriented translation to the
-    # V19/V20 rendering features.
+    # New Runs add Sentence Integrity and the Reviewer's Crosstalk Edits to
+    # deterministic ownership, the Span Identity Check, sparse-label merge,
+    # and listening-oriented translation.
     if speech_model == SPEECH_MODEL_INDEXTTS2:
-        return SPEECH_PIPELINE_V21
+        return SPEECH_PIPELINE_V23
     if speech_model == SPEECH_MODEL_INDEXTTS25:
-        return SPEECH_PIPELINE_V22
+        return SPEECH_PIPELINE_V24
     raise ValueError(f"Unsupported speech model: {speech_model}")
 
 

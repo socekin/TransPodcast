@@ -7,6 +7,7 @@ import math
 import os
 import re
 import secrets
+import statistics
 import tempfile
 import time
 import wave
@@ -39,11 +40,13 @@ from transpodcast.artwork import (
     render_episode_artwork,
     validate_episode_artwork,
 )
+from transpodcast.asr_guard import transcript_runaways
 from transpodcast.content_editing import (
     CONTENT_EDIT_POLICY_VERSION,
     RenderPlan,
     build_render_plan,
     content_edit_for_segment,
+    crosstalk_transcript,
 )
 from transpodcast.decision_records import DecisionLedger, DecisionRecord
 from transpodcast.dependencies import AppDependencies, TranslationAdapter
@@ -125,7 +128,12 @@ from transpodcast.models import (
     TelegramDeliveryRecord,
     TranscriptRevisionJobRecord,
 )
+from transpodcast.ownership_release import (
+    complete_sentence_integrity,
+    has_sentence_integrity,
+)
 from transpodcast.pipeline_versions import (
+    CROSSTALK_PIPELINES,
     RHYTHM_PIPELINES,
     SPEECH_MODEL_INDEXTTS2,
     SUPPORTED_SPEECH_MODELS,
@@ -180,6 +188,11 @@ _RATIONALE_OWNER_IMPORT = (
 _CANDIDATE_RECOMMENDATION_POLICY = "candidate-recommendation-v1"
 _LEGACY_CANDIDATE_RECOMMENDATION_PREFERENCE = "candidate_decision"
 _RATIONALE_BACKFILL = "The Owner selected this video from Channel Backfill."
+# A local Agent (Codex, Claude Code, ...) submitted the video through the
+# `transpodcast` CLI on the Owner's behalf; the Agent's name follows the prefix.
+_RATIONALE_AGENT_PREFIX = "A local Agent added this video for the Owner: "
+# The Modal cost estimate for a new Run uses this many recent costed Runs.
+_COST_ESTIMATE_RUN_COUNT = 10
 
 
 def _normalize_publication_copy_for_comparison(value: str) -> str:
@@ -964,7 +977,15 @@ def _candidate_origin(rationale: str) -> str:
         return "manual"
     if rationale == _RATIONALE_BACKFILL:
         return "backfill"
+    if rationale.startswith(_RATIONALE_AGENT_PREFIX):
+        return "agent"
     return "discovery"
+
+
+def _candidate_origin_agent(rationale: str) -> str | None:
+    if rationale.startswith(_RATIONALE_AGENT_PREFIX):
+        return rationale.removeprefix(_RATIONALE_AGENT_PREFIX) or None
+    return None
 
 
 def _episode_library_state(state: str) -> EpisodeLibraryState:
@@ -995,6 +1016,8 @@ def _processing_library_state(status: str) -> EpisodeLibraryState:
         return EpisodeLibraryState.QUEUED
     if status in {"review_queue", "spend_guardrail", "failed"}:
         return EpisodeLibraryState.ACTION_REQUIRED
+    if status == "closed":
+        return EpisodeLibraryState.CLOSED
     return EpisodeLibraryState.PROCESSING
 
 
@@ -1568,8 +1591,14 @@ class TransPodcastService:
     def import_source_video_from_resolution(
         self,
         resolution_id: str,
+        *,
+        requested_by: str | None = None,
     ) -> dict[str, object]:
-        """Import one explicitly resolved video without changing channel policy."""
+        """Import one explicitly resolved video without changing channel policy.
+
+        ``requested_by`` names the local Agent that submitted the video
+        through the CLI; the Processing Queue shows it as the origin.
+        """
         record = self._resolution(resolution_id)
         requested_video = record.requested_video
         if requested_video is None:
@@ -1611,7 +1640,11 @@ class TransPodcastService:
                 session,
                 channel,
                 requested_video,
-                rationale=_RATIONALE_OWNER_URL,
+                rationale=(
+                    _RATIONALE_AGENT_PREFIX + requested_by
+                    if requested_by
+                    else _RATIONALE_OWNER_URL
+                ),
             )
             session.flush()
             run = session.scalar(
@@ -1632,6 +1665,10 @@ class TransPodcastService:
                 "processing_run_id": run.id if run is not None else None,
                 "episode_id": episode.id if episode is not None else None,
                 "reused": reused,
+                "estimated_cost_usd": self._estimated_modal_cost_usd(
+                    session,
+                    candidate.duration_seconds,
+                ),
                 "source_channel": {
                     "id": channel.id,
                     "title": channel.title,
@@ -1639,6 +1676,38 @@ class TransPodcastService:
                     "created": created_channel,
                 },
             }
+
+    def _estimated_modal_cost_usd(
+        self,
+        session: Session,
+        duration_seconds: int,
+    ) -> float | None:
+        """Modal cost of one Run at the recent median cost per source minute.
+
+        Agent tokens are not included. ``None`` until a Run has a cost.
+        """
+        rows = session.execute(
+            select(
+                ProcessingRunRecord.estimated_cost_usd,
+                CandidateVideoRecord.duration_seconds,
+            )
+            .join(
+                CandidateVideoRecord,
+                CandidateVideoRecord.id == ProcessingRunRecord.candidate_video_id,
+            )
+            .where(
+                ProcessingRunRecord.estimated_cost_usd > 0,
+                CandidateVideoRecord.duration_seconds > 0,
+            )
+            .order_by(ProcessingRunRecord.id.desc())
+            .limit(_COST_ESTIMATE_RUN_COUNT)
+        ).all()
+        if not rows or duration_seconds <= 0:
+            return None
+        rate = statistics.median(
+            float(cost) / (int(seconds) / 60) for cost, seconds in rows
+        )
+        return round(rate * duration_seconds / 60, 2)
 
     def _resolution(self, resolution_id: str) -> SourceResolutionRecord:
         self._prune_resolutions()
@@ -2165,12 +2234,26 @@ class TransPodcastService:
                     "status": run.status,
                     "stage": run.stage,
                     "origin": _candidate_origin(candidate.triage_rationale),
+                    "origin_agent": _candidate_origin_agent(
+                        candidate.triage_rationale
+                    ),
                     "created_at": run.started_at,
                 }
                 for run, candidate, channel in rows
             ]
 
-    def start_processing_run(self, run_id: int) -> ProcessingRunRecord:
+    def start_processing_run(
+        self,
+        run_id: int,
+        *,
+        requested_by: str | None = None,
+    ) -> ProcessingRunRecord:
+        """Start a Run waiting for a manual start.
+
+        ``requested_by`` names the local Agent that started it because the
+        Owner asked it to in conversation; the start is then recorded as
+        Processing Run Activity.
+        """
         with self.dependencies.database.session() as session:
             run = session.get(ProcessingRunRecord, run_id)
             if run is None:
@@ -2180,7 +2263,32 @@ class TransPodcastService:
                     "Processing Run is not waiting for a manual start"
                 )
             run.status = "queued"
+            if requested_by:
+                self._record_activity(
+                    session,
+                    run,
+                    kind="agent_started",
+                    stage=run.stage,
+                    summary=(
+                        f"A local Agent ({requested_by}) started the Run at "
+                        "the Owner's request."
+                    ),
+                    metadata={"requested_by": requested_by},
+                )
             return run
+
+    def estimated_run_cost_usd(self, run_id: int) -> float | None:
+        """The Modal cost estimate of one Run (see ``transpodcast add``)."""
+        with self.dependencies.database.session() as session:
+            run = session.get(ProcessingRunRecord, run_id)
+            if run is None:
+                raise LookupError("Processing Run was not found")
+            candidate = session.get(CandidateVideoRecord, run.candidate_video_id)
+            if candidate is None:
+                return None
+            return self._estimated_modal_cost_usd(
+                session, candidate.duration_seconds
+            )
 
     def cancel_processing_run(self, run_id: int) -> dict[str, object]:
         """Remove a Processing Run that has not started any real work.
@@ -2820,6 +2928,12 @@ class TransPodcastService:
                         duration_ms=_elapsed_ms(stage_started),
                     )
                 analysis = completion.analysis
+                if run.pipeline_version in CROSSTALK_PIPELINES:
+                    # Crosstalk WS-A: short foreign runs return to their
+                    # sentence's Speaker before Voice References read the
+                    # final owners. Idempotent, so resumes and reused
+                    # analyses take the same path.
+                    analysis = complete_sentence_integrity(analysis)
                 if run.pipeline_version in RHYTHM_PIPELINES:
                     # B1/B2: Voice References come from final word owners
                     # and the full-band Source Archive before Speaker
@@ -3661,21 +3775,36 @@ class TransPodcastService:
                     .group_by(CanonicalTranscriptRevisionRecord.ordinal)
                 ).all()
             }
-            for ordinal, target_text in enumerate(
-                translation.segments,
+            # Crosstalk Lines replace their segments' targets and Speaker,
+            # so the transcript reads like the audio.
+            transcript_rows = (
+                crosstalk_transcript(
+                    render_plan,
+                    analysis,
+                    translation.segments,
+                )
+                if len(analysis.segments) == len(translation.segments)
+                else tuple(
+                    (
+                        target,
+                        translated_analysis_segments[
+                            min(
+                                ordinal,
+                                len(translated_analysis_segments) - 1,
+                            )
+                        ].speaker_label,
+                    )
+                    for ordinal, target in enumerate(translation.segments)
+                )
+            )
+            for ordinal, (target_text, speaker_label) in enumerate(
+                transcript_rows,
                 start=1,
             ):
                 source_text = source_segments[
                     min(ordinal - 1, len(source_segments) - 1)
                 ]
-                speaker_id = speaker_ids.get(
-                    translated_analysis_segments[
-                        min(
-                            ordinal - 1,
-                            len(translated_analysis_segments) - 1,
-                        )
-                    ].speaker_label
-                )
+                speaker_id = speaker_ids.get(speaker_label)
                 current_segment = current_segments.pop(ordinal, None)
                 segment_version = (
                     max(
@@ -4765,6 +4894,32 @@ class TransPodcastService:
             run.status = "queued"
             run.error_kind = None
             run.error_summary = None
+            return run
+
+    def close_processing_run(
+        self,
+        processing_run_id: int,
+    ) -> ProcessingRunRecord:
+        """Close a Review Queue Run the Owner will not finish.
+
+        Only the status changes: stages, attempts, artifacts, and the error
+        it failed with stay as history, and a closed Run is never retried.
+        """
+        with self.dependencies.database.session() as session:
+            run = session.get(ProcessingRunRecord, processing_run_id)
+            if run is None:
+                raise LookupError("Processing Run was not found")
+            if run.status != "review_queue":
+                raise RuntimeError("Processing Run is not awaiting review")
+            self._record_activity(
+                session,
+                run,
+                kind="closed",
+                stage=run.stage,
+                summary="The Owner closed the Run without an episode.",
+                metadata={"error_kind": run.error_kind or ""},
+            )
+            run.status = "closed"
             return run
 
     def update_interest_profile(self, markdown: str) -> dict[str, object]:
@@ -6122,11 +6277,28 @@ class TransPodcastService:
             )
             # Speech Pipelines share Source Analysis versions (V19/V20 use
             # V17 analysis), so reuse compares analysis versions.
+            # A transcript with a Qwen3-ASR loop is never
+            # reused: the episode is transcribed again with the ASR guard.
             reusable_analysis = bool(
                 analysis_stage is not None
                 and analysis_stage.version == checkpoint_analysis.pipeline_version
                 and checkpoint_analysis.pipeline_version
                 == analysis_version_for_pipeline(selected_pipeline_version)
+                and not transcript_runaways(
+                    [
+                        word
+                        for segment in checkpoint_analysis.segments
+                        for word in segment.words
+                    ]
+                )
+            )
+            # A reused analysis without Sentence Integrity re-runs the local
+            # end of Source Analysis (no Modal call); its segments change,
+            # so the Translation Project starts over.
+            local_completion = bool(
+                reusable_analysis
+                and selected_pipeline_version in CROSSTALK_PIPELINES
+                and not has_sentence_integrity(checkpoint_analysis)
             )
             previous_agent_provider = (
                 run.agent_provider or DEFAULT_AGENT_PROVIDER
@@ -6134,7 +6306,7 @@ class TransPodcastService:
             selected_agent_provider = self._agent_provider(session)
             preserved_stages = (
                 ("source_archive", "source_analysis")
-                if reusable_analysis
+                if reusable_analysis and not local_completion
                 else ("source_archive",)
             )
             session.execute(
@@ -6149,7 +6321,7 @@ class TransPodcastService:
                 run.translation_json,
                 run.content_edit_json,
             )
-            if reusable_analysis:
+            if reusable_analysis and not local_completion:
                 # The explicit reprocess re-reads the Agent provider; the
                 # reused project must start fresh sessions if it changed.
                 allow_translation_project_provider_rebind(
@@ -6168,7 +6340,9 @@ class TransPodcastService:
                 )
             run.status = "queued"
             run.stage = (
-                "translation" if reusable_analysis else "source_analysis"
+                "translation"
+                if reusable_analysis and not local_completion
+                else "source_analysis"
             )
             run.priority = 10
             run.attempt_count = 0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -12,7 +13,11 @@ from transpodcast.models import (
     ProcessingRunRecord,
     ProcessingStageRecord,
 )
-from transpodcast.pipeline_versions import SPEECH_PIPELINE_V22
+from transpodcast.pipeline_versions import (
+    SPEECH_PIPELINE_V21,
+    SPEECH_PIPELINE_V23,
+    SPEECH_PIPELINE_V24,
+)
 from transpodcast.testing import (
     AcceptanceHarness,
     FakeAnalysisAdapter,
@@ -49,9 +54,9 @@ def test_owner_reprocesses_a_completed_episode_from_source_analysis(
         original_preview_key = episode.preview_key
         assert episode.revision_version == 1
 
-    for project in (
-        harness.dependencies.artifact_root / "translation-projects"
-    ).glob("run-*/*"):
+    for project in (harness.dependencies.artifact_root / "translation-projects").glob(
+        "run-*/*"
+    ):
         for workspace in ("author", "review"):
             path = project / workspace
             if path.is_dir():
@@ -204,7 +209,7 @@ def test_reprocessing_an_old_pipeline_rebuilds_source_analysis(tmp_path) -> None
         run = session.get(ProcessingRunRecord, run_id)
         assert run is not None
         assert run.analysis_json is None
-        assert run.pipeline_version == SPEECH_PIPELINE_V22
+        assert run.pipeline_version == SPEECH_PIPELINE_V24
 
     rerun = client.post("/api/v1/processing-runs:advance").json()
 
@@ -223,9 +228,7 @@ def test_episode_reprocessing_rejects_an_active_reprocess(tmp_path) -> None:
         },
     )
     client.post("/api/v1/discovery-runs")
-    episode_id = client.post("/api/v1/processing-runs:advance").json()[
-        "episode_id"
-    ]
+    episode_id = client.post("/api/v1/processing-runs:advance").json()["episode_id"]
 
     first = client.post(f"/api/v1/episodes/{episode_id}:reprocess")
     second = client.post(f"/api/v1/episodes/{episode_id}:reprocess")
@@ -250,13 +253,9 @@ def test_published_episode_stays_in_the_feed_until_reprocess_is_approved(
         },
     )
     client.post("/api/v1/discovery-runs")
-    episode_id = client.post("/api/v1/processing-runs:advance").json()[
-        "episode_id"
-    ]
+    episode_id = client.post("/api/v1/processing-runs:advance").json()["episode_id"]
     publish = next(
-        item.token
-        for item in harness.telegram.latest().actions
-        if item.label == "发布"
+        item.token for item in harness.telegram.latest().actions if item.label == "发布"
     )
     client.post(f"/api/v1/telegram-actions/{publish}:apply")
     feed_before = client.get(f"/feed/{harness.feed_token}.xml").text
@@ -270,3 +269,106 @@ def test_published_episode_stays_in_the_feed_until_reprocess_is_approved(
     assert feed_while_processing == feed_before
     assert completed["episode_state"] == "revision_pending"
     assert feed_pending == feed_before
+
+
+def test_reprocessing_to_crosstalk_pipeline_completes_locally(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    harness = AcceptanceHarness.ready(tmp_path)
+    client = TestClient(create_app(harness.dependencies))
+    # The episode was first processed before the crosstalk release (V21).
+    monkeypatch.setattr(
+        "transpodcast.service.pipeline_version_for_speech_model",
+        lambda _speech_model: SPEECH_PIPELINE_V21,
+    )
+    client.post(
+        "/api/v1/source-channels",
+        json={
+            "url": "https://www.youtube.com/@usefulshow",
+            "mode": "agent_filtering",
+        },
+    )
+    client.post("/api/v1/discovery-runs")
+    first = client.post("/api/v1/processing-runs:advance").json()
+    episode_id = first["episode_id"]
+    run_id = first["processing_run_id"]
+    analysis = harness.dependencies.analysis
+    assert isinstance(analysis, FakeAnalysisAdapter)
+    with harness.dependencies.database.session() as session:
+        run = session.get(ProcessingRunRecord, run_id)
+        assert run is not None
+        assert "sentence_integrity" not in json.loads(str(run.analysis_json)).get(
+            "boundary_adjudication", {}
+        )
+
+    monkeypatch.undo()
+    requested = client.post(f"/api/v1/episodes/{episode_id}:reprocess")
+
+    assert requested.json()["stage"] == "source_analysis"
+    with harness.dependencies.database.session() as session:
+        run = session.get(ProcessingRunRecord, run_id)
+        assert run is not None
+        assert run.analysis_json is not None
+        assert run.pipeline_version == SPEECH_PIPELINE_V23
+        stage_names = session.scalars(
+            select(ProcessingStageRecord.stage).where(
+                ProcessingStageRecord.processing_run_id == run_id
+            )
+        ).all()
+        assert stage_names == ["source_archive"]
+
+    completed = client.post("/api/v1/processing-runs:advance").json()
+
+    assert completed["processing_state"] == "completed"
+    assert analysis.invocation_count == 1
+    with harness.dependencies.database.session() as session:
+        run = session.get(ProcessingRunRecord, run_id)
+        assert run is not None
+        boundary = json.loads(str(run.analysis_json))["boundary_adjudication"]
+        assert boundary["sentence_integrity"]["policy_version"] == (
+            "sentence-integrity-v1"
+        )
+
+
+class LoopingFirstAnalysis(FakeAnalysisAdapter):
+    """The first transcript holds a Qwen3-ASR loop."""
+
+    def analyze(self, candidate, archive):  # type: ignore[no-untyped-def]
+        result = super().analyze(candidate, archive)
+        if self.invocation_count > 1:
+            return result
+        phrase = ["here's", "something", "you", "might", "be", "missing", "come", "on"]
+        loop = tuple((word, 1.0, 1.0) for _ in range(8) for word in phrase)
+        return replace(result, segments=(replace(result.segments[0], words=loop),))
+
+
+def test_reprocessing_transcribes_a_looping_transcript_again(tmp_path) -> None:
+    harness = AcceptanceHarness.ready(tmp_path)
+    analysis = LoopingFirstAnalysis()
+    client = TestClient(create_app(replace(harness.dependencies, analysis=analysis)))
+    client.post(
+        "/api/v1/source-channels",
+        json={
+            "url": "https://www.youtube.com/@usefulshow",
+            "mode": "agent_filtering",
+        },
+    )
+    client.post("/api/v1/discovery-runs")
+    first = client.post("/api/v1/processing-runs:advance").json()
+
+    requested = client.post(f"/api/v1/episodes/{first['episode_id']}:reprocess")
+
+    assert requested.json()["stage"] == "source_analysis"
+    with harness.dependencies.database.session() as session:
+        stage_names = session.scalars(
+            select(ProcessingStageRecord.stage).where(
+                ProcessingStageRecord.processing_run_id == first["processing_run_id"]
+            )
+        ).all()
+        assert stage_names == ["source_archive"]
+
+    completed = client.post("/api/v1/processing-runs:advance").json()
+
+    assert completed["processing_state"] == "completed"
+    assert analysis.invocation_count == 2

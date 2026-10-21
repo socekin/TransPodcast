@@ -9,7 +9,8 @@ from typing import Any
 import pytest
 
 from transpodcast.adapters.codex import render_translation_worksheet
-from transpodcast.content_editing import build_render_plan
+from transpodcast.content_editing import build_render_plan, crosstalk_transcript
+from transpodcast.crosstalk import crosstalk_candidates, crosstalk_candidates_payload
 from transpodcast.domain import (
     CanonicalSegment,
     SourceAnalysisResult,
@@ -25,6 +26,7 @@ from transpodcast.translation_project_validator import (
     ValidationReport,
     bridge_window,
     expand_segment_ids,
+    information_terms,
     parse_source_warning,
     spoken_length,
     validate_project,
@@ -159,6 +161,7 @@ def _project(
     verdict: str = VERDICT,
     content_edit: dict[str, Any] | None = None,
     sponsors: list[str] | None = None,
+    skeleton: bool = False,
 ) -> Path:
     source_data = listening_source_data(
         {
@@ -191,6 +194,12 @@ def _project(
         "\n".join(lines),
         encoding="utf-8",
     )
+    if skeleton:
+        root.joinpath("source", "worksheets").mkdir(parents=True, exist_ok=True)
+        root.joinpath("source", "worksheets", "part-001.md").write_text(
+            worksheet,
+            encoding="utf-8",
+        )
     glossary_value = GLOSSARY if glossary is None else glossary
     root.joinpath("glossary.json").write_text(
         glossary_value
@@ -679,6 +688,74 @@ def test_validate_py_runs_as_a_standalone_script(tmp_path: Path) -> None:
     assert "ERROR parenthetical_gloss" in result.stdout
 
 
+def _rewrite_worksheet(root: Path, edit: Any) -> None:
+    path = root / "translation" / "part-001.md"
+    path.write_text(edit(path.read_text(encoding="utf-8")), encoding="utf-8")
+
+
+def test_trailing_blank_lines_are_not_a_structure_change(tmp_path: Path) -> None:
+    # A recorded Run: one worksheet ended with an extra newline and the whole
+    # 520-segment translation was rejected.
+    root = _project(tmp_path, skeleton=True)
+    _rewrite_worksheet(root, lambda text: text + "\n\n  \n")
+
+    assert validate_project(root).findings == []
+
+
+def test_validator_reports_the_worksheet_structure_the_harvest_rejects(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path, skeleton=True)
+
+    def insert_line(text: str) -> str:
+        lines = text.splitlines()
+        return "\n".join([*lines[:7], "An extra note.", *lines[7:]])
+
+    _rewrite_worksheet(root, insert_line)
+    report = validate_project(root)
+
+    assert _codes(report, "error") == ["worksheet_structure"]
+    message = report.errors[0].message
+    assert message.startswith("translation/part-001.md line 8:")
+    assert "lines, expected" in message
+    assert "source/worksheets/part-001.md" in message
+
+
+def test_validator_reports_a_changed_source_line(tmp_path: Path) -> None:
+    root = _project(tmp_path, skeleton=True)
+    _rewrite_worksheet(
+        root,
+        lambda text: text.replace("SOURCE: Right.", "SOURCE: Right!", 1),
+    )
+
+    report = validate_project(root)
+
+    assert _codes(report, "error") == ["worksheet_structure"]
+    assert "expected 'SOURCE: Right.'" in report.errors[0].message
+
+
+def test_standalone_validate_py_reports_worksheet_structure(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path, skeleton=True)
+    _rewrite_worksheet(root, lambda text: text.replace("\n\n", "\n\n\n", 1))
+    root.joinpath("validate.py").write_text(
+        listening_validator_source(),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-I", "validate.py"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "ERROR worksheet_structure" in result.stdout
+
+
 def test_pending_verdict_skeleton_fails_review(tmp_path: Path) -> None:
     report = validate_project(_project(tmp_path, verdict=LISTENING_VERDICT_SKELETON))
 
@@ -742,3 +819,509 @@ def _timed_words(item: dict[str, Any]) -> tuple[tuple[str, float, float], ...]:
         (word, round(start + index * step, 3), round(start + (index + 1) * step, 3))
         for index, word in enumerate(words)
     )
+
+
+def _segment(
+    segment_id: str, speaker: str, start: float, end: float, text: str
+) -> dict[str, Any]:
+    return {
+        "id": segment_id,
+        "speaker": speaker,
+        "source_start_seconds": start,
+        "source_end_seconds": end,
+        "source_text": text,
+    }
+
+
+# A crosstalk zone (xt-001 = seg-0001..seg-0010) and two calm segments.
+XT_SEGMENTS: list[dict[str, Any]] = [
+    _segment(
+        "seg-0001", "speaker_0", 0.0, 4.0, "So the real question is whether it ships."
+    ),
+    _segment("seg-0002", "speaker_1", 4.0, 4.6, "We would have"),
+    _segment("seg-0003", "speaker_2", 4.6, 5.0, "Yeah."),
+    _segment("seg-0004", "speaker_1", 5.0, 5.6, "been number"),
+    _segment("seg-0005", "speaker_0", 5.6, 6.0, "No way."),
+    _segment("seg-0006", "speaker_1", 6.0, 7.0, "one by now."),
+    _segment("seg-0007", "speaker_2", 7.0, 7.3, "ha"),
+    _segment("seg-0008", "speaker_0", 7.3, 7.6, "the"),
+    _segment("seg-0009", "speaker_1", 7.6, 8.0, "and the"),
+    _segment(
+        "seg-0010", "speaker_0", 8.0, 12.0, "Anyway let us move on to the next topic."
+    ),
+    _segment("seg-0011", "speaker_0", 60.0, 64.0, "Here is the next topic for today."),
+    _segment(
+        "seg-0012", "speaker_1", 64.0, 70.0, "Great, I have a lot to say about it."
+    ),
+]
+XT_TARGETS = {
+    "seg-0001": "所以真正的问题是它到底能不能上线。",
+    "seg-0002": "我们本来",
+    "seg-0003": "对。",
+    "seg-0004": "能拿第",
+    "seg-0005": "不可能。",
+    "seg-0006": "一了。",
+    "seg-0007": "哈",
+    "seg-0008": "那个",
+    "seg-0009": "还有那个",
+    "seg-0010": "好了，我们接着聊下一个话题吧。",
+    "seg-0011": "这是我们今天要聊的下一个话题。",
+    "seg-0012": "太好了，关于这个我有很多话想说，真的很多。",
+}
+REASSEMBLE: dict[str, Any] = {
+    "candidate_id": "xt-001",
+    "action": "reassemble",
+    "start_segment_id": "seg-0002",
+    "end_segment_id": "seg-0006",
+    "lines": [
+        {
+            "speaker": "speaker_1",
+            "segment_ids": ["seg-0002", "seg-0004", "seg-0006"],
+            "target": "我们本来早就能拿第一了。",
+        },
+        {"speaker": "speaker_2", "segment_ids": ["seg-0003"], "target": "对。"},
+        {"speaker": "speaker_0", "segment_ids": ["seg-0005"], "target": "不可能。"},
+    ],
+    "rationale": "speaker_1's sentence was split by two replies.",
+}
+TRIM: dict[str, Any] = {
+    "candidate_id": "xt-001",
+    "action": "trim",
+    "start_segment_id": "seg-0007",
+    "end_segment_id": "seg-0009",
+    "lines": [],
+    "dropped": [
+        {
+            "segment_ids": ["seg-0007", "seg-0008"],
+            "reason": "unattributable_overlap",
+            "detail": "Laughter and a stray article under three voices.",
+        },
+        {
+            "segment_ids": ["seg-0009"],
+            "reason": "unattributable_overlap",
+            "detail": "A fragment with no verb.",
+        },
+    ],
+    "rationale": "Three voices overlap; nothing attributable remains.",
+}
+XT_VERDICT = VERDICT.replace(
+    '- [asr_name] seg-0003: "acme dot com" is the Acme website.',
+    "- (none)",
+)
+
+
+def _crosstalk_project(
+    root: Path,
+    decisions: list[dict[str, Any]] | None,
+    *,
+    verdict: str = XT_VERDICT,
+) -> Path:
+    edit = _content_edit(decisions=[], description_sponsors=[])
+    if decisions is not None:
+        edit["crosstalk"] = decisions
+    _project(
+        root,
+        targets=XT_TARGETS,
+        segments=XT_SEGMENTS,
+        glossary={**GLOSSARY, "entries": []},
+        verdict=verdict,
+        content_edit=edit,
+        sponsors=[],
+    )
+    segments = json.loads(root.joinpath("source", "segments.json").read_text())
+    root.joinpath("source", "crosstalk-candidates.json").write_text(
+        json.dumps(crosstalk_candidates_payload(segments)),
+        encoding="utf-8",
+    )
+    return root
+
+
+def _decisions(path: Path) -> list[dict[str, Any]]:
+    return json.loads(path.joinpath("content-edit.json").read_text())["crosstalk"]
+
+
+def test_the_crosstalk_fixture_has_one_candidate() -> None:
+    (candidate,) = crosstalk_candidates(XT_SEGMENTS)
+
+    assert candidate["candidate_id"] == "xt-001"
+    assert candidate["segment_ids"][0] == "seg-0001"
+    assert candidate["segment_ids"][-1] == "seg-0010"
+
+
+def test_reassemble_and_trim_decisions_pass(tmp_path: Path) -> None:
+    root = _crosstalk_project(tmp_path, [REASSEMBLE, TRIM])
+
+    report = validate_project(root)
+
+    assert report.findings == []
+
+
+def test_every_candidate_needs_a_decision(tmp_path: Path) -> None:
+    report = validate_project(_crosstalk_project(tmp_path, None))
+
+    assert _codes(report, "error") == ["crosstalk_undecided"]
+    assert "xt-001 needs a crosstalk decision" in report.errors[0].message
+
+
+def test_keep_stands_alone(tmp_path: Path) -> None:
+    keep = {"candidate_id": "xt-001", "action": "keep", "rationale": "Clear."}
+    assert validate_project(_crosstalk_project(tmp_path / "a", [keep])).findings == []
+
+    report = validate_project(_crosstalk_project(tmp_path / "b", [keep, REASSEMBLE]))
+
+    assert _codes(report, "error") == ["crosstalk_invalid"]
+    assert "decided keep and also edited" in report.errors[0].message
+
+
+def test_reassemble_must_keep_every_segment(tmp_path: Path) -> None:
+    lines = [line for line in REASSEMBLE["lines"] if line["speaker"] != "speaker_0"]
+    root = _crosstalk_project(tmp_path, [{**REASSEMBLE, "lines": lines}])
+
+    report = validate_project(root)
+
+    assert _codes(report, "error") == ["crosstalk_incomplete"]
+    assert report.errors[0].segment_ids == ("seg-0005",)
+    assert "nothing in seg-0002..seg-0006 may be lost" in report.errors[0].message
+
+
+def test_reassemble_never_drops(tmp_path: Path) -> None:
+    dropped = [{"segment_ids": ["seg-0005"], "reason": "unattributable_overlap"}]
+    lines = REASSEMBLE["lines"][:2]
+    root = _crosstalk_project(
+        tmp_path, [{**REASSEMBLE, "lines": lines, "dropped": dropped}]
+    )
+
+    report = validate_project(root)
+
+    assert "only trim may drop" in report.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        ({"candidate_id": "xt-009"}, "unknown candidate_id"),
+        ({"action": "rewrite"}, "action must be keep, reassemble or trim"),
+        ({"rationale": " "}, "rationale is required"),
+        ({"start_segment_id": "seg-0011"}, "must be segments of xt-001"),
+        ({"start_segment_id": "seg-0006", "end_segment_id": "seg-0002"}, "in order"),
+    ],
+)
+def test_malformed_crosstalk_decisions_are_errors(
+    tmp_path: Path,
+    change: dict[str, Any],
+    message: str,
+) -> None:
+    root = _crosstalk_project(tmp_path, [{**REASSEMBLE, **change}, TRIM])
+
+    report = validate_project(root)
+
+    assert any(message in item.message for item in report.errors)
+
+
+@pytest.mark.parametrize(
+    "line,message",
+    [
+        ({"speaker": "speaker_9"}, "speaker must be one of"),
+        ({"segment_ids": ["seg-0004", "seg-0002"]}, "in source order"),
+        ({"segment_ids": ["seg-0002", "seg-0011"]}, "is outside seg-0002..seg-0006"),
+        ({"target": "(pending)"}, "target is required"),
+        ({"target": "我" * 241}, "exceeds 240 characters"),
+        ({"target": "我们（本来）早就能拿第一了。"}, "remove brackets"),
+    ],
+)
+def test_crosstalk_lines_follow_the_line_rules(
+    tmp_path: Path,
+    line: dict[str, Any],
+    message: str,
+) -> None:
+    lines = [{**REASSEMBLE["lines"][0], **line}, *REASSEMBLE["lines"][1:]]
+    root = _crosstalk_project(tmp_path, [{**REASSEMBLE, "lines": lines}, TRIM])
+
+    report = validate_project(root)
+
+    assert any(message in item.message for item in report.errors)
+
+
+def test_crosstalk_lines_keep_source_order(tmp_path: Path) -> None:
+    lines = [REASSEMBLE["lines"][1], REASSEMBLE["lines"][0], REASSEMBLE["lines"][2]]
+    root = _crosstalk_project(tmp_path, [{**REASSEMBLE, "lines": lines}, TRIM])
+
+    report = validate_project(root)
+
+    assert any(
+        "source order of their first segment" in item.message for item in report.errors
+    )
+
+
+def test_a_segment_belongs_to_one_line(tmp_path: Path) -> None:
+    lines = [
+        REASSEMBLE["lines"][0],
+        {**REASSEMBLE["lines"][1], "segment_ids": ["seg-0003", "seg-0004"]},
+        REASSEMBLE["lines"][2],
+    ]
+    root = _crosstalk_project(tmp_path, [{**REASSEMBLE, "lines": lines}, TRIM])
+
+    report = validate_project(root)
+
+    assert any(
+        "seg-0004 is already in line 1" in item.message for item in report.errors
+    )
+
+
+def test_trim_drops_only_unattributable_fragments(tmp_path: Path) -> None:
+    dropped = [{**TRIM["dropped"][0], "reason": "low_information"}, TRIM["dropped"][1]]
+    root = _crosstalk_project(tmp_path, [REASSEMBLE, {**TRIM, "dropped": dropped}])
+
+    report = validate_project(root)
+
+    assert _codes(report, "error") == ["crosstalk_invalid"]
+    assert "reason must be unattributable_overlap" in report.errors[0].message
+
+
+def test_trim_without_drops_is_a_reassemble(tmp_path: Path) -> None:
+    trim = {
+        **TRIM,
+        "lines": [
+            {
+                "speaker": "speaker_1",
+                "segment_ids": ["seg-0007", "seg-0008", "seg-0009"],
+                "target": "还有那个。",
+            }
+        ],
+        "dropped": [],
+    }
+    report = validate_project(_crosstalk_project(tmp_path, [REASSEMBLE, trim]))
+
+    assert "without them use reassemble" in report.errors[0].message
+
+
+def test_crosstalk_ranges_never_overlap(tmp_path: Path) -> None:
+    dropped = [
+        {**TRIM["dropped"][0], "segment_ids": ["seg-0006", "seg-0007", "seg-0008"]},
+        TRIM["dropped"][1],
+    ]
+    trim = {**TRIM, "start_segment_id": "seg-0006", "dropped": dropped}
+    report = validate_project(_crosstalk_project(tmp_path, [REASSEMBLE, trim]))
+
+    assert any("overlaps crosstalk[1]" in item.message for item in report.errors)
+
+
+def test_a_dropped_name_or_number_must_be_justified(tmp_path: Path) -> None:
+    dropped = [
+        {**TRIM["dropped"][0]},
+        {**TRIM["dropped"][1], "segment_ids": ["seg-0009"]},
+    ]
+    source = [
+        *XT_SEGMENTS[:8],
+        _segment("seg-0009", "speaker_1", 7.6, 8.0, "and Nvidia at 40"),
+        *XT_SEGMENTS[9:],
+    ]
+    root = tmp_path
+    edit = _content_edit(
+        decisions=[],
+        description_sponsors=[],
+        crosstalk=[REASSEMBLE, {**TRIM, "dropped": dropped}],
+    )
+    _project(
+        root,
+        targets=XT_TARGETS,
+        segments=source,
+        glossary={**GLOSSARY, "entries": []},
+        verdict=XT_VERDICT,
+        content_edit=edit,
+        sponsors=[],
+    )
+    segments = json.loads(root.joinpath("source", "segments.json").read_text())
+    root.joinpath("source", "crosstalk-candidates.json").write_text(
+        json.dumps(crosstalk_candidates_payload(segments)), encoding="utf-8"
+    )
+
+    report = validate_project(root)
+
+    assert _codes(report, "warning") == ["crosstalk_dropped_information"]
+    assert "Nvidia, 40" in report.warnings[0].message
+    assert _codes(report, "error") == ["unjustified_warnings"]
+
+    root.joinpath("verdict.md").write_text(
+        XT_VERDICT.replace(
+            "VALIDATOR_NOTES:\n- (none)",
+            "VALIDATOR_NOTES:\n- seg-0009: three voices; the name has no speaker.",
+        ),
+        encoding="utf-8",
+    )
+    assert validate_project(root).errors == []
+
+
+def test_information_terms_skip_sentence_openers() -> None:
+    assert information_terms("Yeah. I think so, OK") == []
+    assert information_terms("we met Sam at YC in 2024") == ["Sam", "YC", "2024"]
+
+
+def test_crosstalk_needs_candidates(tmp_path: Path) -> None:
+    root = _project(tmp_path, content_edit=_content_edit(crosstalk=[REASSEMBLE]))
+
+    report = validate_project(root)
+
+    assert _codes(report, "error") == ["crosstalk_invalid"]
+    assert "no crosstalk candidates" in report.errors[0].message
+
+
+def test_crosstalk_never_overlaps_a_content_edit(tmp_path: Path) -> None:
+    decision = {
+        **DECISION,
+        "start_segment_id": "seg-0005",
+        "end_segment_id": "seg-0005",
+        "start_anchor": "No way",
+        "end_anchor": "No way",
+        "retained_end_target": "",
+        "evidence_segment_ids": ["seg-0005"],
+        "category": "opening_highlight",
+    }
+    root = _crosstalk_project(tmp_path, [REASSEMBLE, TRIM])
+    edit = json.loads(root.joinpath("content-edit.json").read_text())
+    edit["decisions"] = [decision]
+    root.joinpath("content-edit.json").write_text(json.dumps(edit), encoding="utf-8")
+
+    report = validate_project(root)
+
+    assert any(
+        "overlaps content edit edit-001" in item.message for item in report.errors
+    )
+
+
+def _xt_analysis() -> SourceAnalysisResult:
+    return SourceAnalysisResult(
+        segments=tuple(
+            CanonicalSegment(
+                segment_id=item["id"],
+                speaker_label=item["speaker"],
+                start_seconds=item["source_start_seconds"],
+                end_seconds=item["source_end_seconds"],
+                text=item["source_text"],
+                words=_timed_words(item),
+            )
+            for item in XT_SEGMENTS
+        ),
+        pipeline_version="fixture-v23",
+        diarization_model="fixture",
+        transcription_model="fixture",
+        alignment_model="fixture",
+    )
+
+
+def _xt_translation(crosstalk: list[dict[str, Any]]) -> TranslationResult:
+    return TranslationResult(
+        title="t",
+        overview="o",
+        target_locale="zh-CN",
+        segments=tuple(XT_TARGETS[item["id"]] for item in XT_SEGMENTS),
+        provider="fixture",
+        model="fixture",
+        input_tokens=0,
+        output_tokens=0,
+        content_edit_json=json.dumps(
+            _content_edit(decisions=[], description_sponsors=[], crosstalk=crosstalk),
+            ensure_ascii=False,
+        ),
+    )
+
+
+def test_the_render_plan_plays_crosstalk_lines_in_turn() -> None:
+    analysis = _xt_analysis()
+
+    plan = build_render_plan(analysis, _xt_translation([REASSEMBLE, TRIM]))
+
+    assert plan.status == "accepted"
+    assert [
+        (segment.segment_id, segment.speaker_label)
+        for segment in plan.analysis.segments
+    ] == [
+        ("seg-0001", "speaker_0"),
+        ("seg-0002-retained-crosstalk", "speaker_1"),
+        ("seg-0003-retained-crosstalk", "speaker_2"),
+        ("seg-0005-retained-crosstalk", "speaker_0"),
+        ("seg-0010", "speaker_0"),
+        ("seg-0011", "speaker_0"),
+        ("seg-0012", "speaker_1"),
+    ]
+    assert plan.translation.segments[1:4] == (
+        "我们本来早就能拿第一了。",
+        "对。",
+        "不可能。",
+    )
+    lines = plan.analysis.segments[1:4]
+    # Consecutive slots across seg-0002..seg-0006 (4.0-7.0 s), by source speech.
+    assert [(line.start_seconds, line.end_seconds) for line in lines] == [
+        (4.0, 6.2),
+        (6.2, 6.6),
+        (6.6, 7.0),
+    ]
+    assert lines[0].text == "We would have been number one by now."
+    assert [unit.unit_id for unit in plan.units][1:4] == [
+        "seg-0002-retained-crosstalk",
+        "seg-0003-retained-crosstalk",
+        "seg-0005-retained-crosstalk",
+    ]
+    assert plan.units[1].parent_segment_id == "seg-0002"
+
+
+def test_the_transcript_reads_like_the_crosstalk_audio() -> None:
+    analysis = _xt_analysis()
+    translation = _xt_translation([REASSEMBLE, TRIM])
+    plan = build_render_plan(analysis, translation)
+
+    rows = crosstalk_transcript(plan, analysis, translation.segments)
+
+    assert rows[1:9] == (
+        ("我们本来早就能拿第一了。", "speaker_1"),
+        ("对。", "speaker_2"),
+        ("", "speaker_1"),
+        ("不可能。", "speaker_0"),
+        ("", "speaker_1"),
+        ("", "speaker_2"),
+        ("", "speaker_0"),
+        ("", "speaker_1"),
+    )
+    assert rows[0] == (XT_TARGETS["seg-0001"], "speaker_0")
+
+
+def test_an_invalid_crosstalk_edit_keeps_the_translation() -> None:
+    broken = {**REASSEMBLE, "lines": REASSEMBLE["lines"][:2]}
+
+    plan = build_render_plan(_xt_analysis(), _xt_translation([broken]))
+
+    assert plan.status == "degraded"
+    assert plan.diagnostics == ("crosstalk_edit_is_invalid",)
+    assert plan.crosstalk_edits == ()
+    assert len(plan.analysis.segments) == len(XT_SEGMENTS)
+
+
+def test_an_undecided_candidate_renders_as_translated() -> None:
+    plan = build_render_plan(_xt_analysis(), _xt_translation([]))
+
+    assert plan.status == "accepted"
+    assert len(plan.units) == len(XT_SEGMENTS)
+
+
+def test_crosstalk_lines_reach_the_renderer_as_render_units() -> None:
+    from transpodcast.modal_pipeline import _render_units_by_segment
+    from transpodcast.service import _serialize_analysis
+
+    plan = build_render_plan(_xt_analysis(), _xt_translation([REASSEMBLE, TRIM]))
+    analysis = json.loads(_serialize_analysis(plan.analysis))
+
+    units = _render_units_by_segment(
+        analysis,
+        list(analysis["segments"]),
+        list(plan.translation.segments),
+    )
+
+    assert [unit["unit_id"] for unit in units] == [
+        segment.segment_id for segment in plan.analysis.segments
+    ]
+    assert [unit["pause_before_seconds"] for unit in units[1:4]] == [0.0, 0.0, 0.0]
+    assert [segment["speaker_label"] for segment in analysis["segments"][1:4]] == [
+        "speaker_1",
+        "speaker_2",
+        "speaker_0",
+    ]

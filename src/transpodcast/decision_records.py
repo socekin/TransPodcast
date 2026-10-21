@@ -34,6 +34,7 @@ DECISION_RECORD_KINDS = frozenset(
         "natural-segmentation-boundary",
         "reference-selection",
         "segment-attribution",
+        "sentence-integrity",
         "span-identity",
         "fallback",
     }

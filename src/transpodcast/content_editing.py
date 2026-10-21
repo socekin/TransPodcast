@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
+from transpodcast.crosstalk import crosstalk_candidates
 from transpodcast.domain import (
     CanonicalSegment,
     SourceAnalysisResult,
@@ -15,6 +16,11 @@ from transpodcast.domain import (
 )
 from transpodcast.pipeline_versions import WORD_OWNERSHIP_PIPELINES
 from transpodcast.speaker_boundaries import recover_sentence_punctuation
+from transpodcast.translation_project_validator import (
+    CrosstalkEdit,
+    ValidationReport,
+    check_crosstalk_decisions,
+)
 
 CONTENT_EDIT_POLICY_VERSION = "semantic-content-edit-v1"
 _ALLOWED_CATEGORIES = {"opening_highlight", "paid_ad"}
@@ -25,6 +31,8 @@ RENDER_PLAN_SCHEMA_VERSION = "render-plan-v1"
 _TARGET_SENTENCE_BOUNDARY = re.compile(
     r"[\u3002\uFF01\uFF1F!?\uFF1B;]+[\u201D\u2019\"']*\s*"
 )
+# A Crosstalk Line is a render segment in its first source segment's lineage.
+CROSSTALK_LINE_SUFFIX = "-retained-crosstalk"
 
 
 @dataclass(frozen=True)
@@ -143,6 +151,7 @@ class RenderPlan:
     status: str
     diagnostics: tuple[str, ...] = ()
     units: tuple[RenderPlanUnit, ...] = ()
+    crosstalk_edits: tuple[CrosstalkEdit, ...] = ()
 
     @property
     def excluded_source_seconds(self) -> float:
@@ -283,6 +292,25 @@ def build_render_plan(
         translation.segments,
         normalized,
     )
+    crosstalk_edits, crosstalk_diagnostic = _resolve_crosstalk(
+        analysis,
+        payload.get("crosstalk"),
+        normalized,
+    )
+    if crosstalk_diagnostic:
+        diagnostics.append(crosstalk_diagnostic)
+    if crosstalk_edits:
+        tidied = _apply_crosstalk(
+            render_analysis.segments,
+            render_targets,
+            crosstalk_edits,
+        )
+        if tidied is None:
+            diagnostics.append("crosstalk_edit_does_not_match_render_segments")
+            crosstalk_edits = ()
+        else:
+            render_analysis = replace(render_analysis, segments=tidied[0])
+            render_targets = tidied[1]
     if analysis.segments and not render_analysis.segments:
         return _retained_plan(
             analysis,
@@ -311,7 +339,195 @@ def build_render_plan(
         status="degraded" if diagnostics else "accepted",
         diagnostics=tuple(diagnostics),
         units=units,
+        crosstalk_edits=crosstalk_edits,
     )
+
+
+def _resolve_crosstalk(
+    analysis: SourceAnalysisResult,
+    decisions: object,
+    exclusions: tuple[ResolvedContentExclusion, ...],
+) -> tuple[tuple[CrosstalkEdit, ...], str | None]:
+    """The Reviewer's Crosstalk Edits, re-checked against this analysis.
+
+    The candidates are recomputed from the segments the Translation Project
+    was built from, so the project's ``validate.py`` and the render apply
+    one rule. Any invalid decision drops every edit: the render then keeps
+    the per-segment translation.
+    """
+    if decisions is None:
+        return (), None
+    segments = [
+        {
+            "id": segment.segment_id,
+            "speaker": segment.speaker_label,
+            "source_start_seconds": segment.start_seconds,
+            "source_end_seconds": segment.end_seconds,
+            "source_text": segment.text,
+        }
+        for segment in analysis.segments
+    ]
+    report = ValidationReport()
+    edits = check_crosstalk_decisions(
+        report,
+        decisions,
+        crosstalk_candidates(segments),
+        segments,
+    )
+    # An undecided candidate simply stays as translated.
+    if any(item.code != "crosstalk_undecided" for item in report.errors):
+        return (), "crosstalk_edit_is_invalid"
+    by_id = {
+        segment.segment_id: index
+        for index, segment in enumerate(analysis.segments)
+    }
+    for edit in edits:
+        block = analysis.segments[
+            by_id[edit.start_segment_id] : by_id[edit.end_segment_id] + 1
+        ]
+        start = min(segment.start_seconds for segment in block)
+        end = max(segment.end_seconds for segment in block)
+        if any(
+            item.start_seconds < end and item.end_seconds > start
+            for item in exclusions
+        ):
+            return (), "crosstalk_edit_overlaps_content_edit"
+    return tuple(edits), None
+
+
+def _apply_crosstalk(
+    segments: tuple[CanonicalSegment, ...],
+    targets: tuple[str, ...],
+    edits: tuple[CrosstalkEdit, ...],
+) -> tuple[tuple[CanonicalSegment, ...], tuple[str, ...]] | None:
+    """Replace each edited range with its Crosstalk Lines, in order."""
+    position = {segment.segment_id: index for index, segment in enumerate(segments)}
+    replacements: dict[int, tuple[int, list[tuple[CanonicalSegment, str]]]] = {}
+    for edit in edits:
+        start = position.get(edit.start_segment_id)
+        end = position.get(edit.end_segment_id)
+        if start is None or end is None or start > end:
+            return None
+        block = segments[start : end + 1]
+        block_ids = {segment.segment_id for segment in block}
+        covered = {
+            *(item for line in edit.lines for item in line.segment_ids),
+            *edit.dropped_segment_ids,
+        }
+        if covered != block_ids:
+            return None
+        replacements[start] = (end, _crosstalk_lines(block, edit))
+    rendered: list[CanonicalSegment] = []
+    rendered_targets: list[str] = []
+    index = 0
+    while index < len(segments):
+        if index in replacements:
+            end, lines = replacements[index]
+            for segment, target in lines:
+                rendered.append(segment)
+                rendered_targets.append(target)
+            index = end + 1
+            continue
+        rendered.append(segments[index])
+        rendered_targets.append(targets[index])
+        index += 1
+    return tuple(rendered), tuple(rendered_targets)
+
+
+def _crosstalk_lines(
+    block: tuple[CanonicalSegment, ...],
+    edit: CrosstalkEdit,
+) -> list[tuple[CanonicalSegment, str]]:
+    """One render segment per line, laid out in turn across the range.
+
+    The dub plays the lines one after another, so each gets a consecutive
+    slot of the range's source window in proportion to its source speech.
+    Consecutive slots give the Rhythm Policy ordinary turn pauses instead of
+    the overlap pause, and every line keeps its words for the Voice and
+    Emotion Reference evidence.
+    """
+    by_id = {segment.segment_id: segment for segment in block}
+    window_start = min(segment.start_seconds for segment in block)
+    window_end = max(segment.end_seconds for segment in block)
+    weights = [
+        max(
+            0.2,
+            sum(
+                by_id[item].end_seconds - by_id[item].start_seconds
+                for item in line.segment_ids
+            ),
+        )
+        for line in edit.lines
+    ]
+    total = sum(weights)
+    cursor = window_start
+    lines: list[tuple[CanonicalSegment, str]] = []
+    for number, (line, weight) in enumerate(
+        zip(edit.lines, weights, strict=True), start=1
+    ):
+        end = (
+            window_end
+            if number == len(edit.lines)
+            else cursor + (window_end - window_start) * weight / total
+        )
+        members = [by_id[item] for item in line.segment_ids]
+        lines.append(
+            (
+                replace(
+                    members[0],
+                    segment_id=f"{line.segment_ids[0]}{CROSSTALK_LINE_SUFFIX}",
+                    speaker_label=line.speaker,
+                    start_seconds=round(cursor, 6),
+                    end_seconds=round(end, 6),
+                    text=" ".join(member.text for member in members),
+                    words=tuple(
+                        word for member in members for word in member.words
+                    ),
+                    overlap=True,
+                    events=tuple(
+                        dict.fromkeys(
+                            event for member in members for event in member.events
+                        )
+                    ),
+                    confidence=min(member.confidence for member in members),
+                ),
+                line.target,
+            )
+        )
+        cursor = end
+    return lines
+
+
+def crosstalk_transcript(
+    plan: RenderPlan,
+    analysis: SourceAnalysisResult,
+    targets: tuple[str, ...],
+) -> tuple[tuple[str, str], ...]:
+    """Each Canonical segment's transcript target and Speaker label.
+
+    A Crosstalk Line's target and Speaker sit on its first segment; the
+    other segments it absorbed, and dropped fragments, have no target, so
+    the transcript reads like the audio.
+    """
+    rows = [
+        (target, segment.speaker_label)
+        for segment, target in zip(analysis.segments, targets, strict=True)
+    ]
+    position = {
+        segment.segment_id: index
+        for index, segment in enumerate(analysis.segments)
+    }
+    for edit in plan.crosstalk_edits:
+        for line in edit.lines:
+            for offset, segment_id in enumerate(line.segment_ids):
+                index = position[segment_id]
+                rows[index] = (
+                    (line.target, line.speaker) if offset == 0 else ("", rows[index][1])
+                )
+        for segment_id in edit.dropped_segment_ids:
+            index = position[segment_id]
+            rows[index] = ("", rows[index][1])
+    return tuple(rows)
 
 
 def _merge_adjacent_exclusions(

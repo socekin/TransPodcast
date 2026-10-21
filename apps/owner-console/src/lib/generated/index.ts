@@ -41,6 +41,7 @@ export type { ProcessingRunErrorResponse } from './models/ProcessingRunErrorResp
 export type { ProcessingRunRetryPlanResponse } from './models/ProcessingRunRetryPlanResponse';
 export type { ProcessingRunsResponse } from './models/ProcessingRunsResponse';
 export type { ProcessingRunStageResponse } from './models/ProcessingRunStageResponse';
+export type { ProcessingRunStartRequest } from './models/ProcessingRunStartRequest';
 export type { ProcessingRunSummaryResponse } from './models/ProcessingRunSummaryResponse';
 export type { ProcessingRunSummaryTranslationResponse } from './models/ProcessingRunSummaryTranslationResponse';
 export type { ProcessingRunTranslationResponse } from './models/ProcessingRunTranslationResponse';
@@ -60,6 +61,7 @@ export type { SourceChannelUpdate } from './models/SourceChannelUpdate';
 export type { SourceResolutionResponse } from './models/SourceResolutionResponse';
 export type { SourceUrlRequest } from './models/SourceUrlRequest';
 export type { SourceVideoImport } from './models/SourceVideoImport';
+export type { SourceVideoImportRequest } from './models/SourceVideoImportRequest';
 export type { SourceVideoSummary } from './models/SourceVideoSummary';
 export type { SpeakerCreate } from './models/SpeakerCreate';
 export type { SpeakerMerge } from './models/SpeakerMerge';

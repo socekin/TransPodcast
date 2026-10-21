@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from transpodcast.api import create_app
 from transpodcast.domain import SourceCandidate
 from transpodcast.models import ProcessingRunRecord, ProcessingStageRecord
-from transpodcast.pipeline_versions import SPEECH_PIPELINE_V21, SPEECH_PIPELINE_V22
+from transpodcast.pipeline_versions import SPEECH_PIPELINE_V23, SPEECH_PIPELINE_V24
 from transpodcast.service import TransPodcastService, _default_settings
 from transpodcast.testing import AcceptanceHarness, FakeSourceAdapter
 
@@ -291,8 +291,8 @@ def test_speech_model_selection_is_frozen_when_each_run_is_created(
         )
         assert first_run is not None
         assert second_run is not None
-        assert first_run.pipeline_version == SPEECH_PIPELINE_V22
-        assert second_run.pipeline_version == SPEECH_PIPELINE_V21
+        assert first_run.pipeline_version == SPEECH_PIPELINE_V24
+        assert second_run.pipeline_version == SPEECH_PIPELINE_V23
 
 
 def test_explicit_source_video_import_rejects_channel_only_resolution(tmp_path) -> None:

@@ -30,6 +30,15 @@ Claude subscription account. If the CLI is signed in but still unavailable,
 update it: TransPodcast requires the CLI flags that isolate it from personal
 settings, MCP servers, skills, and hooks.
 
+If Claude Code worked before and Setup Readiness now reports it as missing
+with no sign-in method, the services were probably using the shared
+interactive Keychain login and it stopped refreshing, or their one-year token
+expired. Create or renew the
+[Claude Code token file](configuration.md#claude-code-token-file); processing
+resumes within a minute without a restart. A Claude call that fails with
+`OAuth session expired and could not be refreshed` is recorded as an Agent
+sign-in failure, not retried as a provider error.
+
 ## A run reports a different Agent provider
 
 Each Processing Run keeps the Agent provider it started with. A Translation

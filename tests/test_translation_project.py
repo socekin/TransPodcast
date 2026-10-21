@@ -890,6 +890,78 @@ def test_invalid_workspace_still_persists_turn_usage(
     assert state["author_sessions"] == ["invalid-author-session"]
 
 
+class TrailingNewlineAuthorRunner(ProgressiveProjectRunner):
+    """Completes the targets but leaves extra final newlines."""
+
+    def run_project(
+        self,
+        *,
+        root: Path,
+        instructions: str,
+        session_id: str | None,
+    ) -> ProjectExecution:
+        execution = super().run_project(
+            root=root,
+            instructions=instructions,
+            session_id=session_id,
+        )
+        if root.name == "author":
+            worksheet = next((root / "translation").glob("*.md"))
+            worksheet.write_text(
+                worksheet.read_text(encoding="utf-8") + "\n\n",
+                encoding="utf-8",
+            )
+        return execution
+
+
+def test_extra_final_newlines_never_reject_a_completed_translation(
+    tmp_path: Path,
+) -> None:
+    adapter = CodexTranslationAdapter(
+        TrailingNewlineAuthorRunner(),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+
+    result = adapter.translate(_candidate())
+
+    assert result.reviewed is True
+    assert len(result.segments) == 5
+
+
+def test_projects_carry_original_worksheets_for_validate_py(
+    tmp_path: Path,
+) -> None:
+    adapter = CodexTranslationAdapter(
+        ProgressiveProjectRunner(),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+
+    adapter.translate(_candidate())
+
+    project = next(tmp_path.glob("run-88/*/project.json")).parent
+    for role in ("author", "review"):
+        skeleton = project / role / "source" / "worksheets" / "part-001.md"
+        assert skeleton.read_text(encoding="utf-8").count(
+            "TARGET: (pending)"
+        ) == 5
+        assert "TARGET: 译文" in (
+            project / role / "translation" / "part-001.md"
+        ).read_text(encoding="utf-8")
+
+
+def test_structure_errors_name_the_worksheet_and_line(tmp_path: Path) -> None:
+    adapter = CodexTranslationAdapter(
+        StructurallyInvalidTurnRunner(),  # type: ignore[arg-type]
+        project_root=tmp_path,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"anchors were modified: part-001\.md line \d+: expected 'SOURCE",
+    ):
+        adapter.translate(_candidate())
+
+
 class FailedReviewerTurnRunner(ProgressiveProjectRunner):
     def run_project(
         self,
