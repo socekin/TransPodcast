@@ -6,8 +6,19 @@ uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
 ### Changed
 
+- TransPodcast Host's web interface is rebuilt around adding, listening, and
+  publishing: a home screen with the add field, episodes in progress, a
+  resume-listening mini player, and the library; an episode screen with a
+  ring player, a transcript synced to playback, summary, quality findings,
+  and the processing record; a Run screen with progress and, when a Run
+  needs you, the decision inside the failing step; and Settings.
+- Adding an episode in the web interface starts its Run right away.
+- Playback speed (0.75× to 2×) is one remembered setting for every episode;
+  auditioning a Listening Audit line has its own speed starting at 1×.
 - Add an episode from any link yt-dlp can extract one episode from:
   YouTube, Apple Podcasts and other podcast pages, direct audio files, and
   the other sites yt-dlp supports. The web interface and `transpodcast add`
@@ -19,16 +30,6 @@ uses semantic versioning for public releases.
 - yt-dlp runs from its own install under `TRANSPODCAST_YTDLP_ROOT` and moves
   to each new release: the worker checks once a day, and a failed download is
   retried once after an upgrade when a newer release is out.
-
-- TransPodcast Host's web interface is rebuilt around adding, listening, and
-  publishing: a home screen with the add field, episodes in progress, a
-  resume-listening mini player, and the library; an episode screen with a
-  ring player, a transcript synced to playback, summary, quality findings,
-  and the processing record; a Run screen with progress and, when a Run
-  needs you, the decision inside the failing step; and Settings.
-- Adding an episode in the web interface starts its Run right away.
-- Playback speed (0.75× to 2×) is one remembered setting for every episode;
-  auditioning a Listening Audit line has its own speed starting at 1×.
 
 ### Added
 
@@ -261,7 +262,8 @@ uses semantic versioning for public releases.
 - CI includes deterministic tests, documentation validation, secret scanning,
   dependency audits, and CodeQL analysis.
 
-[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/socekin/TransPodcast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/socekin/TransPodcast/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/socekin/TransPodcast/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/socekin/TransPodcast/releases/tag/v0.1.0
