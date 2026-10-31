@@ -11,8 +11,9 @@ _Avoid_: User, customer, audience
 
 **TransPodcast Host**:
 The always-on Mac that runs orchestration, durable workflow state, the local
-Translation Agent, and the TransPodcast web interface used to configure sources,
-review decisions, monitor Processing Runs, and manage publications.
+Translation Agent, and the TransPodcast web interface used to add episodes by
+link, follow their Processing Runs, answer the decisions a Run waits on, listen,
+and publish or decline.
 _Avoid_: Cloud control plane
 
 **Agent CLI**:

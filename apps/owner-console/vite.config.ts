@@ -2,6 +2,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+// Point the dev server at another API instance, e.g. a worktree build.
+const apiTarget = process.env.TRANSPODCAST_API_URL ?? "http://127.0.0.1:8000";
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
@@ -33,9 +36,9 @@ export default defineConfig({
     port: 4173,
     allowedHosts: ["terminal.local"],
     proxy: {
-      "/api": "http://127.0.0.1:8000",
-      "/feed": "http://127.0.0.1:8000",
-      "/media": "http://127.0.0.1:8000"
+      "/api": apiTarget,
+      "/feed": apiTarget,
+      "/media": apiTarget
     }
   },
   test: {

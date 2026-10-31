@@ -176,12 +176,18 @@ experimentation. Do not import or process content you are not authorized to use.
 
 In TransPodcast Host:
 
-1. Open **Sources** and add a channel or direct video URL.
-2. Review the discovered metadata and choose the episode.
-3. Start processing and monitor the durable stage attempts.
-4. Resolve any quality, attribution, or Listening Audit review items.
-5. Listen to the private preview.
-6. Publish only after the final owner decision is enabled.
+1. Paste a YouTube episode URL into the add field on the home screen and
+   confirm. Processing starts right away; a link already in the library opens
+   the existing episode instead.
+2. Follow progress on the Run page. Every step expands to its details.
+3. When a Run needs you, the failing step opens with its decision. For a
+   Listening Audit hold, audition each problem line, then continue or close
+   the Run.
+4. Listen to the private preview; the transcript follows playback.
+5. Publish or decline from the episode page or the home library.
+
+The web interface works with single episodes. Following a channel stays
+available through `transpodcast channel add` and the Control API.
 
 The worker resumes from the latest valid checkpoint after a restart. It does
 not intentionally rerun completed GPU stages.

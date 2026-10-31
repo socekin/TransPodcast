@@ -3,171 +3,307 @@ import {
   type PropsWithChildren,
   useCallback,
   useContext,
+  useEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
 
-const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 0.75];
+import { readStorage, writeStorage } from "./utils";
 
-type PlayerContextValue = {
-  episodeId: number | null;
+/** Menu order, slowest first. */
+export const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 1.75, 2] as const;
+/** Tapping the compact control walks up from 1× and wraps to 0.75×. */
+const CYCLE_ORDER = [1, 1.25, 1.5, 1.75, 2, 0.75];
+
+const RATE_KEY = "transpodcast.playbackRate";
+const NOW_PLAYING_KEY = "transpodcast.nowPlaying";
+const SAVE_INTERVAL_MS = 5000;
+
+export type Track = {
+  episodeId: number;
   sourceUrl: string;
   title: string;
+  subtitle: string;
+  artworkUrl: string;
   duration: number;
+};
+
+type SavedTrack = Track & { position: number };
+
+type PlayerValue = {
+  track: Track | null;
   currentTime: number;
+  duration: number;
   playing: boolean;
   rate: number;
   error: boolean;
-  load: (
-    episodeId: number | null,
-    title: string,
-    duration: number,
-    sourceUrl?: string
-  ) => void;
+  /** Load the track if it is not the current one, then play it. */
+  play: (track: Track, startAt?: number) => void;
   toggle: () => void;
+  pause: () => void;
   seek: (seconds: number) => void;
   skip: (seconds: number) => void;
+  setRate: (rate: number) => void;
   cycleRate: () => void;
 };
 
-const PlayerContext = createContext<PlayerContextValue | null>(null);
+const PlayerContext = createContext<PlayerValue | null>(null);
+
+export function nextRate(rate: number): number {
+  const index = CYCLE_ORDER.indexOf(rate);
+  return CYCLE_ORDER[(index + 1) % CYCLE_ORDER.length] ?? 1;
+}
+
+export function storedRate(): number {
+  const value = Number(readStorage(RATE_KEY));
+  return (PLAYBACK_RATES as readonly number[]).includes(value) ? value : 1;
+}
+
+function storedTrack(): SavedTrack | null {
+  const raw = readStorage(NOW_PLAYING_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(raw) as Partial<SavedTrack>;
+    if (
+      typeof value.episodeId !== "number" ||
+      typeof value.sourceUrl !== "string" ||
+      typeof value.title !== "string"
+    ) {
+      return null;
+    }
+    return {
+      episodeId: value.episodeId,
+      sourceUrl: value.sourceUrl,
+      title: value.title,
+      subtitle: value.subtitle ?? "",
+      artworkUrl: value.artworkUrl ?? "",
+      duration: Number(value.duration) || 0,
+      position: Number(value.position) || 0
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function sameTrack(left: Track | null, right: Track | null): boolean {
+  return (
+    left !== null &&
+    right !== null &&
+    left.episodeId === right.episodeId &&
+    left.sourceUrl === right.sourceUrl
+  );
+}
 
 export function PlayerProvider({ children }: PropsWithChildren) {
   const audio = useRef<HTMLAudioElement | null>(null);
-  const rateRef = useRef(1);
-  const [episodeId, setEpisodeId] = useState<number | null>(null);
-  const [sourceUrl, setSourceUrl] = useState("");
-  const [title, setTitle] = useState("");
-  const [duration, setDuration] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
+  const restored = useRef<SavedTrack | null>(storedTrack());
+  const [track, setTrack] = useState<Track | null>(restored.current);
+  const [currentTime, setCurrentTime] = useState(
+    restored.current?.position ?? 0
+  );
+  const [duration, setDuration] = useState(restored.current?.duration ?? 0);
   const [playing, setPlaying] = useState(false);
-  const [rate, setRate] = useState(1);
+  const [rate, setRateState] = useState(storedRate);
   const [error, setError] = useState(false);
+  const rateRef = useRef(rate);
+  const trackRef = useRef<Track | null>(restored.current);
+  // The source the element holds; a restored track loads only on play.
+  const loadedUrl = useRef<string | null>(null);
+  const pendingStart = useRef<number | null>(
+    restored.current?.position ?? null
+  );
+  const lastSaved = useRef(0);
 
-  const load = useCallback(
-    (
-      nextId: number | null,
-      nextTitle: string,
-      nextDuration: number,
-      requestedSourceUrl?: string
-    ) => {
-      const nextSourceUrl =
-        requestedSourceUrl ??
-        (nextId === null ? "" : `/api/v1/episodes/${nextId}/preview`);
-      setTitle(nextTitle);
+  const save = useCallback((position: number) => {
+    const current = trackRef.current;
+    if (!current) {
+      return;
+    }
+    lastSaved.current = Date.now();
+    writeStorage(
+      NOW_PLAYING_KEY,
+      JSON.stringify({ ...current, position } satisfies SavedTrack)
+    );
+  }, []);
+
+  const startElement = useCallback(() => {
+    const element = audio.current;
+    if (!element) {
+      return;
+    }
+    element.playbackRate = rateRef.current;
+    void element.play().catch(() => setError(true));
+  }, []);
+
+  const play = useCallback(
+    (next: Track, startAt?: number) => {
+      const element = audio.current;
       setError(false);
-      if (
-        episodeId === nextId &&
-        title === nextTitle &&
-        sourceUrl === nextSourceUrl
-      ) {
-        if (nextId === null) {
-          setPlaying((value) => !value);
-          return;
+      if (!sameTrack(trackRef.current, next) || loadedUrl.current !== next.sourceUrl) {
+        const resume =
+          sameTrack(trackRef.current, next) && startAt === undefined
+            ? pendingStart.current ?? element?.currentTime ?? 0
+            : startAt ?? 0;
+        trackRef.current = next;
+        setTrack(next);
+        setDuration(next.duration);
+        setCurrentTime(resume);
+        pendingStart.current = resume > 0 ? resume : null;
+        loadedUrl.current = next.sourceUrl;
+        if (element) {
+          element.src = next.sourceUrl;
         }
-        if (audio.current?.paused) {
-          void audio.current.play().catch(() => setError(true));
-        } else {
-          audio.current?.pause();
-        }
-        return;
+        save(resume);
+      } else if (startAt !== undefined && element) {
+        element.currentTime = startAt;
+        setCurrentTime(startAt);
       }
-      setEpisodeId(nextId);
-      setSourceUrl(nextSourceUrl);
-      setDuration(nextDuration);
-      setCurrentTime(0);
-      if (audio.current && nextId !== null) {
-        audio.current.src = nextSourceUrl;
-        // The playback rate resets with a new source; reapply the
-        // owner's chosen rate so it persists across episodes.
-        audio.current.playbackRate = rateRef.current;
-        void audio.current.play().catch(() => setError(true));
-      } else {
-        setPlaying(nextId === null);
-      }
+      startElement();
     },
-    [episodeId, sourceUrl, title]
+    [save, startElement]
   );
 
   const toggle = useCallback(() => {
-    if (!audio.current || episodeId === null) {
-      setPlaying((value) => !value);
+    const current = trackRef.current;
+    const element = audio.current;
+    if (!current || !element) {
       return;
     }
-    if (audio.current.paused) {
-      void audio.current.play().catch(() => setError(true));
-    } else {
-      audio.current.pause();
+    if (loadedUrl.current !== current.sourceUrl) {
+      play(current);
+      return;
     }
-  }, [episodeId]);
+    if (element.paused) {
+      startElement();
+    } else {
+      element.pause();
+    }
+  }, [play, startElement]);
+
+  const pause = useCallback(() => {
+    audio.current?.pause();
+  }, []);
 
   const seek = useCallback(
     (seconds: number) => {
       const limit = duration > 0 ? duration : Number.MAX_SAFE_INTEGER;
       const next = Math.min(Math.max(0, seconds), limit);
-      if (audio.current && episodeId !== null) {
-        audio.current.currentTime = next;
+      const element = audio.current;
+      if (element && loadedUrl.current === trackRef.current?.sourceUrl) {
+        element.currentTime = next;
+      } else {
+        pendingStart.current = next;
       }
       setCurrentTime(next);
+      save(next);
     },
-    [duration, episodeId]
+    [duration, save]
   );
 
   const skip = useCallback(
     (seconds: number) => {
-      // Read the element's clock directly so rapid taps accumulate
-      // instead of racing a stale state snapshot.
+      // Read the element's clock so rapid taps accumulate.
+      const element = audio.current;
       const base =
-        audio.current && episodeId !== null
-          ? audio.current.currentTime
-          : currentTime;
+        element && loadedUrl.current === trackRef.current?.sourceUrl
+          ? element.currentTime
+          : pendingStart.current ?? currentTime;
       seek(base + seconds);
     },
-    [currentTime, episodeId, seek]
+    [currentTime, seek]
   );
 
-  const cycleRate = useCallback(() => {
-    const index = PLAYBACK_RATES.indexOf(rateRef.current);
-    const next =
-      PLAYBACK_RATES[(index + 1) % PLAYBACK_RATES.length] ?? 1;
-    rateRef.current = next;
-    setRate(next);
+  const setRate = useCallback((value: number) => {
+    rateRef.current = value;
+    setRateState(value);
+    writeStorage(RATE_KEY, String(value));
     if (audio.current) {
-      audio.current.playbackRate = next;
+      audio.current.playbackRate = value;
     }
   }, []);
 
+  const cycleRate = useCallback(() => {
+    setRate(nextRate(rateRef.current));
+  }, [setRate]);
+
+  useEffect(() => {
+    const element = audio.current;
+    return () => {
+      if (element && trackRef.current && loadedUrl.current) {
+        save(element.currentTime);
+      }
+    };
+  }, [save]);
+
+  const value = useMemo<PlayerValue>(
+    () => ({
+      track,
+      currentTime,
+      duration,
+      playing,
+      rate,
+      error,
+      play,
+      toggle,
+      pause,
+      seek,
+      skip,
+      setRate,
+      cycleRate
+    }),
+    [
+      track,
+      currentTime,
+      duration,
+      playing,
+      rate,
+      error,
+      play,
+      toggle,
+      pause,
+      seek,
+      skip,
+      setRate,
+      cycleRate
+    ]
+  );
+
   return (
-    <PlayerContext.Provider
-      value={{
-        episodeId,
-        sourceUrl,
-        title,
-        duration,
-        currentTime,
-        playing,
-        rate,
-        error,
-        load,
-        toggle,
-        seek,
-        skip,
-        cycleRate
-      }}
-    >
+    <PlayerContext.Provider value={value}>
       {children}
       <audio
         ref={audio}
         preload="metadata"
-        onEnded={() => setPlaying(false)}
-        onPause={() => setPlaying(false)}
+        data-testid="global-audio"
         onPlay={() => {
           setPlaying(true);
           setError(false);
         }}
-        onError={() => {
+        onPause={(event) => {
           setPlaying(false);
-          setError(true);
+          save(event.currentTarget.currentTime);
+        }}
+        onEnded={() => {
+          setPlaying(false);
+          setCurrentTime(0);
+          save(0);
+        }}
+        onError={() => {
+          if (loadedUrl.current) {
+            setPlaying(false);
+            setError(true);
+          }
+        }}
+        onLoadedMetadata={(event) => {
+          const element = event.currentTarget;
+          element.playbackRate = rateRef.current;
+          if (pendingStart.current !== null) {
+            element.currentTime = pendingStart.current;
+            pendingStart.current = null;
+          }
         }}
         onDurationChange={(event) => {
           const measured = event.currentTarget.duration;
@@ -175,31 +311,28 @@ export function PlayerProvider({ children }: PropsWithChildren) {
             setDuration(measured);
           }
         }}
-        onLoadedMetadata={(event) => {
-          event.currentTarget.playbackRate = rateRef.current;
+        onRateChange={(event) => {
+          // A new source resets the element's rate to its default.
+          if (event.currentTarget.playbackRate !== rateRef.current) {
+            event.currentTarget.playbackRate = rateRef.current;
+          }
         }}
-        onTimeUpdate={(event) =>
-          setCurrentTime(event.currentTarget.currentTime)
-        }
+        onTimeUpdate={(event) => {
+          const time = event.currentTarget.currentTime;
+          setCurrentTime(time);
+          if (Date.now() - lastSaved.current > SAVE_INTERVAL_MS) {
+            save(time);
+          }
+        }}
       />
     </PlayerContext.Provider>
   );
 }
 
-export function usePlayer(): PlayerContextValue {
+export function usePlayer(): PlayerValue {
   const value = useContext(PlayerContext);
   if (!value) {
     throw new Error("usePlayer must be used inside PlayerProvider");
   }
   return value;
-}
-
-export function formatPlayerTime(seconds: number): string {
-  const safe = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(safe / 3600);
-  const minutes = Math.floor((safe % 3600) / 60);
-  const remaining = safe % 60;
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`
-    : `${minutes}:${String(remaining).padStart(2, "0")}`;
 }

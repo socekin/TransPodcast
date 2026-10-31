@@ -6,6 +6,32 @@ uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed
+
+- TransPodcast Host's web interface is rebuilt around adding, listening, and
+  publishing: a home screen with the add field, episodes in progress, a
+  resume-listening mini player, and the library; an episode screen with a
+  ring player, a transcript synced to playback, summary, quality findings,
+  and the processing record; a Run screen with progress and, when a Run
+  needs you, the decision inside the failing step; and Settings.
+- Adding an episode in the web interface starts its Run right away.
+- Playback speed (0.75× to 2×) is one remembered setting for every episode;
+  auditioning a Listening Audit line has its own speed starting at 1×.
+
+### Added
+
+- `GET /api/v1/processing-runs/{id}/transcript` returns each line with its
+  place in the rendered audio, and episode detail names its
+  `processing_run_id`.
+- `GET /api/v1/processing-runs/{id}/rendered-audio` serves a Run's rendered
+  audio so a Listening Audit line can be auditioned before an episode exists.
+
+### Removed
+
+- The Decision Queue, Interest Profile, Source Channel, Channel Voice Library,
+  Run list, segment correction, and publication metadata screens. Their APIs
+  remain for Telegram and the `transpodcast` command.
+
 ## [0.3.0] - 2026-10-21
 
 ### Added

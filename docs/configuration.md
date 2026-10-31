@@ -138,7 +138,8 @@ when the executable is missing.
 
 Both `TRANSPODCAST_TELEGRAM_BOT_TOKEN` and
 `TRANSPODCAST_TELEGRAM_OWNER_CHAT_ID` are required to enable Telegram.
-Telegram is optional: TransPodcast Host remains the complete decision surface.
+Telegram is optional: TransPodcast Host remains the complete surface for
+publication and Review Queue decisions.
 
 ## Precedence and verification
 

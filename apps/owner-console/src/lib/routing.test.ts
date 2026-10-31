@@ -4,64 +4,36 @@ import { pathForRoute, routeFromPath } from "./routing";
 
 describe("TransPodcast Host routing", () => {
   it.each([
-    ["/episodes", "episodes", null, null, null],
-    ["/episodes/42", "episode", 42, null, null],
-    ["/episodes/42/edit", "episode", 42, null, null],
-    ["/episodes/demo", "episodes", null, null, null],
-    ["/decisions", "decisions", null, null, null],
-    ["/channels", "channels", null, null, null],
-    ["/channels/new", "add-channel", null, null, null],
-    ["/channels/18", "channel", null, 18, null],
-    ["/interests", "interests", null, null, null],
-    ["/channel-voices", "channelVoices", null, null, null],
-    ["/runs", "runs", null, null, null],
-    ["/runs/8", "runs", null, null, 8],
-    ["/settings", "settings", null, null, null]
-  ] as const)(
-    "restores %s",
-    (path, view, episodeId, channelId, runId) => {
-      expect(routeFromPath(path)).toEqual({
-        view,
-        episodeId,
-        channelId,
-        runId
-      });
-    }
-  );
-
-  it("creates entity-aware detail paths", () => {
-    expect(
-      pathForRoute({
-        view: "episode",
-        episodeId: 42,
-        channelId: null,
-        runId: null
-      })
-    ).toBe("/episodes/42");
-    expect(
-      pathForRoute({
-        view: "channel",
-        episodeId: null,
-        channelId: 18,
-        runId: null
-      })
-    ).toBe("/channels/18");
-    expect(
-      pathForRoute({
-        view: "runs",
-        episodeId: null,
-        channelId: null,
-        runId: 8
-      })
-    ).toBe("/runs/8");
+    ["/", { name: "home" }],
+    ["/episodes/42", { name: "episode", id: 42 }],
+    ["/episodes/42/", { name: "episode", id: 42 }],
+    ["/runs/8", { name: "run", id: 8 }],
+    ["/settings", { name: "settings" }]
+  ] as const)("restores %s", (path, route) => {
+    expect(routeFromPath(path)).toEqual(route);
+    expect(pathForRoute(routeFromPath(path))).toBe(path.replace(/\/$/, "") || "/");
   });
 
-  it("falls back to the episode library for unknown paths", () => {
-    expect(routeFromPath("/unknown")).toEqual({
-      view: "episodes",
-      episodeId: null,
-      channelId: null,
-      runId: null
+  it("opens the episode from a retired Segment Editor URL", () => {
+    expect(routeFromPath("/episodes/42/edit")).toEqual({
+      name: "episode",
+      id: 42
     });
+  });
+
+  it.each([
+    "/episodes",
+    "/episodes/demo",
+    "/decisions",
+    "/channels",
+    "/channels/new",
+    "/channels/18",
+    "/interests",
+    "/channel-voices",
+    "/runs",
+    "/runs/0",
+    "/missing"
+  ])("sends the retired or unknown path %s home", (path) => {
+    expect(routeFromPath(path)).toEqual({ name: "home" });
   });
 });

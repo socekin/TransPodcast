@@ -950,6 +950,29 @@ def create_app(dependencies: AppDependencies) -> FastAPI:
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
+    @app.get("/api/v1/processing-runs/{processing_run_id}/transcript")
+    def processing_run_transcript(
+        processing_run_id: int,
+    ) -> dict[str, object]:
+        try:
+            return service.processing_run_transcript(processing_run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.api_route(
+        "/api/v1/processing-runs/{processing_run_id}/rendered-audio",
+        methods=["GET", "HEAD"],
+    )
+    def processing_run_rendered_audio(
+        processing_run_id: int,
+        range_header: Annotated[str | None, Header(alias="Range")] = None,
+    ) -> Response:
+        try:
+            content = service.processing_run_rendered_audio(processing_run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return _media_response(content, range_header)
+
     @app.post("/api/v1/processing-runs:advance")
     def advance_processing() -> dict[str, object]:
         outcome = service.advance_next_processing_run()

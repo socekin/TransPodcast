@@ -262,6 +262,24 @@ class ResolvedPublicationMetadata:
     chapter_proposals_json: str
 
 
+def _render_spans_by_segment(
+    render_plan: RenderPlan,
+    timings: list[tuple[float, float]],
+) -> dict[str, list[tuple[float, float]]]:
+    """Group rendered-audio spans by the source segment they came from;
+    a segment split for crosstalk keeps every retained piece."""
+    spans: dict[str, list[tuple[float, float]]] = {}
+    for index, render_segment in enumerate(render_plan.analysis.segments):
+        if index >= len(timings):
+            continue
+        lineage = render_segment.segment_id.split(
+            "-retained-",
+            maxsplit=1,
+        )[0]
+        spans.setdefault(lineage, []).append(timings[index])
+    return spans
+
+
 def _elapsed_ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
 
@@ -6883,6 +6901,7 @@ class TransPodcastService:
                     else None
                 ),
                 "state": episode.state,
+                "processing_run_id": episode.processing_run_id,
                 "duration_seconds": episode.duration_seconds,
                 "source_title": episode.source_title,
                 "source_show": episode.source_show,
@@ -6966,6 +6985,101 @@ class TransPodcastService:
             if self.dependencies.show_artwork:
                 return self.dependencies.show_artwork, "image/png"
             raise LookupError("Episode Artwork is unavailable")
+
+    def processing_run_transcript(
+        self,
+        processing_run_id: int,
+    ) -> dict[str, object]:
+        """Each line's text and where it plays in the rendered audio,
+        without the Speaker evidence Processing Detail carries."""
+        with self.dependencies.database.session() as session:
+            run = session.get(ProcessingRunRecord, processing_run_id)
+            if run is None:
+                raise LookupError("Processing Run was not found")
+            analysis = json.loads(run.analysis_json or "{}")
+            if not analysis.get("segments") or not run.translation_json:
+                return {"processing_run_id": run.id, "lines": []}
+            analysis_result = deserialize_analysis(run.analysis_json or "{}")
+            translation_result = deserialize_translation(
+                run.translation_json,
+                run.content_edit_json,
+            )
+            render = json.loads(run.render_json or "{}")
+            spans = _render_spans_by_segment(
+                build_render_plan(analysis_result, translation_result),
+                [
+                    (float(item[0]), float(item[1]))
+                    for item in render.get("segment_timings", [])
+                ],
+            )
+            episode = session.scalars(
+                select(EpisodeRecord).where(
+                    EpisodeRecord.processing_run_id == run.id
+                )
+            ).first()
+            rows = (
+                {
+                    row.ordinal: row
+                    for row in session.scalars(
+                        select(EpisodeSegmentRecord).where(
+                            EpisodeSegmentRecord.episode_id == episode.id
+                        )
+                    ).all()
+                }
+                if episode is not None
+                else {}
+            )
+            lines: list[dict[str, object]] = []
+            for ordinal, segment in enumerate(
+                analysis_result.segments,
+                start=1,
+            ):
+                row = rows.get(ordinal)
+                target_text = (
+                    row.target_text
+                    if row is not None
+                    else (
+                        translation_result.segments[ordinal - 1]
+                        if ordinal <= len(translation_result.segments)
+                        else ""
+                    )
+                )
+                segment_spans = spans.get(segment.segment_id, [])
+                lines.append(
+                    {
+                        "ordinal": ordinal,
+                        "segment_id": segment.segment_id,
+                        "speaker_label": segment.speaker_label,
+                        "output_start_seconds": (
+                            segment_spans[0][0] if segment_spans else None
+                        ),
+                        "output_end_seconds": (
+                            segment_spans[-1][1] if segment_spans else None
+                        ),
+                        "source_text": (
+                            row.source_text if row is not None else segment.text
+                        ),
+                        "target_text": target_text,
+                    }
+                )
+            return {"processing_run_id": run.id, "lines": lines}
+
+    def processing_run_rendered_audio(self, processing_run_id: int) -> bytes:
+        """The rendered audio checkpoint, so the Owner can listen to a
+        Run held in the Review Queue before any episode exists."""
+        with self.dependencies.database.session() as session:
+            run = session.get(ProcessingRunRecord, processing_run_id)
+            if run is None:
+                raise LookupError("Processing Run was not found")
+            key = run.render_preview_key
+        content = (
+            self.dependencies.storage.read_preview(str(key))
+            if key is not None
+            else None
+        )
+        if content is None:
+            raise LookupError("Rendered audio is not available")
+        return content
 
     def episode_processing_detail(
         self,
@@ -7087,19 +7201,10 @@ class TransPodcastService:
             }
             items: list[dict[str, object]] = []
             disputed_count = 0
-            render_spans_by_segment: dict[str, list[tuple[float, float]]] = {}
-            for index, render_segment in enumerate(
-                render_plan.analysis.segments
-            ):
-                if index >= len(timings):
-                    continue
-                lineage = render_segment.segment_id.split(
-                    "-retained-",
-                    maxsplit=1,
-                )[0]
-                render_spans_by_segment.setdefault(lineage, []).append(
-                    timings[index]
-                )
+            render_spans_by_segment = _render_spans_by_segment(
+                render_plan,
+                timings,
+            )
             for ordinal, (segment, canonical_segment) in enumerate(
                 zip(
                     analysis.get("segments") or [],

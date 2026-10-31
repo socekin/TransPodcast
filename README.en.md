@@ -73,12 +73,10 @@ other podcast clients.
 - **✂️ Ad and opening-highlight removal:** Exclude clearly separable third-party
   paid advertisements and assembled opening highlights from the final Mandarin
   audio. Uncertain material is retained to avoid removing editorial content.
-- **🔎 Episode discovery and selection:** Import YouTube channels or individual
-  URLs and select episodes against personal interests.
-- **🗣️ Channel voice library:** Reuse confirmed speaker voices across later
-  episodes from the same channel.
-- **🖥️ Local web management:** Use TransPodcast Host to manage the library and
-  inspect progress, failures, revisions, and publication status.
+- **🖥️ Local web interface:** Paste a YouTube episode URL and processing
+  starts. The Run page shows every step, and a step that needs your decision
+  opens on its own. The built-in player highlights the transcript as it plays,
+  with one 0.75×–2× speed for every episode.
 - **♻️ Recoverable long-running work:** Continue interrupted episodes from the
   latest completed stage instead of processing the entire episode again.
 - **✅ Private preview before publication:** Review translation, pronunciation,
@@ -176,13 +174,14 @@ remaining service configuration in [Getting Started](docs/getting-started.md).
 2. Follow [Deployment](docs/deployment/README.md) to configure the Mac running
    TransPodcast, the Modal speech applications, and the Cloudflare publication
    Worker required for remote listening.
-3. Add a YouTube channel or individual episode URL for learning or research in
-   TransPodcast Host.
-4. Start processing and inspect stage progress, retries, and revisions.
+3. Paste a YouTube episode URL for learning or research on the TransPodcast
+   Host home screen; processing starts once you confirm.
+4. Follow stage progress on the Run page; when a Run needs your decision, the
+   Run page opens that step.
 5. Listen to the complete private preview and review translation, speakers,
    pronunciation, and audio quality.
-6. Publish manually to the private RSS feed after listening to the full preview
-   and confirming episode metadata.
+6. Publish manually to the private RSS feed after listening to the full
+   preview.
 7. Follow the private RSS URL in Apple Podcasts or another podcast client.
 
 ## Processing Pipeline
@@ -206,8 +205,8 @@ source rhythm and runs the listening audit, with automatic re-rendering where
 needed. Mastering and audio QA measures loudness, peak, codec, sample rate,
 channels, and bitrate directly from the finished file.
 
-These stages match the run log in TransPodcast Host. The run log preserves
-stage status and attempt history, and processing can resume from the latest
+These stages match the steps on the TransPodcast Host Run page. The
+processing record preserves stage status and attempt history, and processing can resume from the latest
 valid checkpoint. An episode enters the publication queue after mastering and
 audio QA, then reaches the private RSS feed only after a complete preview and
 manual approval.
