@@ -32,6 +32,14 @@ uses semantic versioning for public releases.
   Run list, segment correction, and publication metadata screens. Their APIs
   remain for Telegram and the `transpodcast` command.
 
+### Security
+
+- Refresh dependencies with newly published advisories: brotli 1.2.1 (via
+  yt-dlp), and for development only filelock 4.2.5 and msgpack 1.2.4 (via
+  pip-audit), Vitest 4.1.12, and undici 8.12.3 in TransPodcast Host's test
+  environment and 7.30.1 in the publication Worker's, with Wrangler 4.156.0
+  and Cloudflare Workers types 5.20261031.1.
+
 ## [0.3.0] - 2026-10-21
 
 ### Added
