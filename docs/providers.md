@@ -7,7 +7,7 @@ before use.
 
 | Capability | Current integration | Required for real processing | Replaceability |
 | --- | --- | --- | --- |
-| Source metadata and media | `yt-dlp` / YouTube, with a local Chromium-based browser for proof-of-origin tokens | Yes | Implement `SourceAdapter` |
+| Source metadata and media | `yt-dlp`: YouTube and any other site it can extract one episode from, self-updating | Yes | Implement `SourceAdapter` |
 | Triage, translation, review, Speaker ownership review, metadata | Codex CLI (default) or Claude Code CLI | Yes, one selected provider | Implement the agent protocols |
 | Diarization, ASR, alignment, embeddings, TTS, Listening Audit | Modal apps | Yes | Implement analysis and speech adapters |
 | Workflow state | Local SQLite | Yes | Core persistence contract |

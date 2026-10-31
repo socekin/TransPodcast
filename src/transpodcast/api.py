@@ -128,6 +128,8 @@ class ResolvedSourceResponseChannel(BaseModel):
 
 class ResolvedSourceVideo(BaseModel):
     youtube_video_id: str
+    platform: str = "youtube"
+    thumbnail_url: str | None = None
     title: str
     description: str
     duration_seconds: int

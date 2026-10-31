@@ -22,7 +22,7 @@
   <img alt="Node.js 22+" src="https://img.shields.io/badge/node.js-22%2B-339933" />
 </p>
 
-TransPodcast 面向希望用中文完整收听英文长播客的用户。支持导入 YouTube 播客链接，完成多人语音识别、全文翻译、中文配音和质量检查，最终生成可在 Apple Podcasts 等客户端订阅的私人中文播客。
+TransPodcast 面向希望用中文完整收听英文长播客的用户。支持导入 YouTube、Apple Podcasts 等节目页面或音频文件链接，完成多人语音识别、全文翻译、中文配音和质量检查，最终生成可在 Apple Podcasts 等客户端订阅的私人中文播客。
 
 > TransPodcast 仅用于学习、研究和技术实验。请勿处理或传播未经授权的内容，也不建议使用本项目公开发布翻译节目。
 
@@ -41,7 +41,8 @@ TransPodcast 面向希望用中文完整收听英文长播客的用户。支持�
 - **🧑‍💻 本地 Agent 命令行：** Codex、Claude Code 等本地 Agent 可以用 `transpodcast` 命令提交节目、关注频道和查看进度，只有在你要求时才开始处理。
 - **🎙️ 可选配音模型：** 可在 IndexTTS 2.0 与 IndexTTS 2.5 之间选择，每个处理任务创建后固定所用模型。
 - **✂️ 广告与开头高光移除：** 识别可明确分离的第三方付费广告和拼接式开头高光，不将其纳入最终中文音频；不确定内容会保留，避免误删正文。
-- **🖥️ 本地 Web 界面：** 粘贴 YouTube 单集链接即开始处理；在处理页查看每一步的进度，任务需要你决定时对应步骤会自动展开；内置播放器的台词稿随播放高亮，倍速 0.75×–2× 对所有节目生效。
+- **🔗 任意节目链接：** 由 yt-dlp 判断链接能否下载：YouTube、Apple Podcasts 等播客页面、音频直链以及 yt-dlp 支持的其他网站都可以直接添加；yt-dlp 每天自动更新到最新版本，下载 YouTube 不需要浏览器。关注频道仍只支持 YouTube。
+- **🖥️ 本地 Web 界面：** 粘贴节目链接即开始处理；在处理页查看每一步的进度，任务需要你决定时对应步骤会自动展开；内置播放器的台词稿随播放高亮，倍速 0.75×–2× 对所有节目生效。
 - **♻️ 可恢复的长任务：** 长节目在处理中断后可从最近完成的阶段继续，避免整期重新处理。
 - **✅ 发布前试听：** 中文成片先进入私人试听，确认翻译、发音和音频质量后再发布。
 - **📡 私人播客订阅：** 生成受保护的 RSS feed，可通过 URL 添加到 Apple Podcasts 等播客客户端。
@@ -70,7 +71,7 @@ TransPodcast 面向希望用中文完整收听英文长播客的用户。支持�
 | 本地运行主机 | 一台可持续运行的 macOS 设备 | 运行 TransPodcast、保存本地数据并提供管理界面 |
 | 本地工具链 | Xcode Command Line Tools（提供 Git 与 make）、Python 3.12–3.14、[uv](https://docs.astral.sh/uv/)、Node.js 22+、npm、FFmpeg | 安装、构建和运行项目 |
 | 处理 Agent CLI（至少一个） | 已安装并完成认证的 [Codex CLI](https://developers.openai.com/codex/cli)（默认），或可选的 [Claude Code](https://code.claude.com/docs/en/setup) | 节目筛选、翻译、审校、说话人归属复核和节目文案生成 |
-| 浏览器 | Google Chrome 或其他 Chromium 内核浏览器 | 下载 YouTube 来源音频时在本机生成访问令牌 |
+| JavaScript 运行时 | [Deno](https://deno.com/)（yt-dlp 默认）或 Node.js 22+ | yt-dlp 处理 YouTube 页面时使用 |
 | GPU 语音服务 | Modal 账号 | 语音识别、说话人分析和中文语音合成 |
 | 私人播客发布 | Cloudflare 账号、R2 bucket、Worker 和稳定的 HTTPS 域名 | 托管受保护的 RSS feed 与完整节目音频 |
 | 播客客户端 | Apple Podcasts 或其他支持通过 URL 添加 feed 的客户端 | 订阅私人中文播客 |
@@ -115,7 +116,7 @@ TransPodcast Host 默认地址：<http://transpodcast.localhost:8000>。
 
 1. 按 [Getting Started](docs/getting-started.md) 完成本地环境和服务配置。
 2. 按 [Deployment](docs/deployment/README.md) 配置运行 TransPodcast 的 Mac、Modal 语音应用，以及远程收听所需的 Cloudflare publication Worker。
-3. 在 TransPodcast Host 首页粘贴用于学习或研究的 YouTube 单集 URL，确认后立即开始处理。
+3. 在 TransPodcast Host 首页粘贴用于学习或研究的节目链接（YouTube、播客页面或音频文件），确认后立即开始处理。
 4. 在处理页查看各阶段的进度；任务需要你决定时，处理页会直接展开对应步骤。
 5. 完整收听私人试听版本，检查翻译、说话人、发音和音频质量。
 6. 完整试听后，人工发布到私人 RSS feed。

@@ -26,11 +26,29 @@ type Phase =
 
 const PENDING_START = new Set(["pending_start", "ready_to_start"]);
 
+/** The library entry for this link: a YouTube video by its ID, any other
+ * source by its address. */
 function existingItem(
   items: ApiLibraryItem[],
-  videoId: string
+  url: string,
+  videoId: string | null
 ): ApiLibraryItem | undefined {
-  return items.find((item) => youtubeVideoId(item.source_url) === videoId);
+  const address = normalizedAddress(url);
+  return items.find((item) =>
+    videoId
+      ? youtubeVideoId(item.source_url) === videoId
+      : normalizedAddress(item.source_url) === address
+  );
+}
+
+function normalizedAddress(url: string): string {
+  try {
+    const parsed = new URL(url.trim());
+    parsed.hash = "";
+    return `${parsed.host.replace(/^www\./, "")}${parsed.pathname.replace(/\/$/, "")}${parsed.search}`;
+  } catch {
+    return url.trim();
+  }
 }
 
 function stateLine(item: ApiLibraryItem): string {
@@ -71,8 +89,11 @@ export function AddSheet({
   useEffect(() => {
     setStartError("");
     // A link to an episode already in the library needs no lookup.
-    const knownId = youtubeVideoId(request.url);
-    const known = knownId ? existingItem(itemsRef.current, knownId) : undefined;
+    const known = existingItem(
+      itemsRef.current,
+      request.url,
+      youtubeVideoId(request.url)
+    );
     if (known) {
       setPhase({ name: "existing", item: known });
       return;
@@ -87,7 +108,13 @@ export function AddSheet({
           setPhase({ name: "channel" });
           return;
         }
-        const existing = existingItem(itemsRef.current, video.youtube_video_id);
+        const existing = existingItem(
+          itemsRef.current,
+          video.source_url,
+          video.platform && video.platform !== "youtube"
+            ? null
+            : video.youtube_video_id
+        );
         setPhase(
           existing
             ? { name: "existing", item: existing }
@@ -220,7 +247,12 @@ export function AddSheet({
             <RingArt progress={null}>
               <Artwork
                 className="ring-art-image"
-                src={youtubeThumbnail(video.youtube_video_id)}
+                src={
+                  video.thumbnail_url ??
+                  (video.platform && video.platform !== "youtube"
+                    ? null
+                    : youtubeThumbnail(video.youtube_video_id))
+                }
                 alt=""
               />
             </RingArt>

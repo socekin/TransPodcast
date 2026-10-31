@@ -8,6 +8,18 @@ uses semantic versioning for public releases.
 
 ### Changed
 
+- Add an episode from any link yt-dlp can extract one episode from:
+  YouTube, Apple Podcasts and other podcast pages, direct audio files, and
+  the other sites yt-dlp supports. The web interface and `transpodcast add`
+  accept such links; another platform's show is kept paused, and following
+  a channel stays YouTube-only.
+- YouTube downloads no longer open a browser: current yt-dlp uses YouTube
+  clients that need no proof-of-origin token. The `yt-dlp-getpot-wpc`
+  plugin and `TRANSPODCAST_YOUTUBE_BROWSER_EXECUTABLE` are removed.
+- yt-dlp runs from its own install under `TRANSPODCAST_YTDLP_ROOT` and moves
+  to each new release: the worker checks once a day, and a failed download is
+  retried once after an upgrade when a newer release is out.
+
 - TransPodcast Host's web interface is rebuilt around adding, listening, and
   publishing: a home screen with the add field, episodes in progress, a
   resume-listening mini player, and the library; an episode screen with a

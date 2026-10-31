@@ -155,103 +155,213 @@ def test_youtube_proxy_is_passed_to_caption_requests(
     assert candidate.captions == "captions"
 
 
-def test_source_archive_uses_browser_po_token_provider(
-    monkeypatch,
-) -> None:
-    captured_command: list[str] = []
+class FakeRuntime:
+    """A yt-dlp install whose forced update may bring a newer release."""
 
-    def successful_run(
-        command: list[str], **_kwargs
-    ) -> subprocess.CompletedProcess[str]:
-        captured_command.extend(command)
+    def __init__(self, *, newer_release: bool) -> None:
+        self.executable = "/tools/yt-dlp/current/bin/yt-dlp"
+        self.newer_release = newer_release
+        self.refreshes: list[bool] = []
+
+    def available(self) -> bool:
+        return True
+
+    def refresh(self, *, force: bool = False) -> bool:
+        self.refreshes.append(force)
+        return force and self.newer_release
+
+
+def _archive_run(failures: int):
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if len(commands) <= failures:
+            return subprocess.CompletedProcess(
+                command, 1, "", "ERROR: Requested format is not available"
+            )
         output_root = Path(command[command.index("--paths") + 1])
         (output_root / "source.m4a").write_bytes(b"archived audio")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("subprocess.run", successful_run)
-    browser = Path(
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    )
-    source = YtDlpSourceAdapter(browser_executable=browser)
-    candidate = source._candidate(
-        {"id": "video-archive", "title": "Archive source"}
-    )
+    return run, commands
+
+
+def test_source_archive_never_launches_a_browser(monkeypatch) -> None:
+    run, commands = _archive_run(failures=0)
+    monkeypatch.setattr("subprocess.run", run)
+    source = YtDlpSourceAdapter()
+    candidate = source._candidate({"id": "video-archive", "title": "Archive"})
 
     archive = source.archive(candidate)
 
-    extractor_args = [
-        captured_command[index + 1]
-        for index, argument in enumerate(captured_command)
-        if argument == "--extractor-args"
-    ]
-    assert extractor_args == [
-        "youtube:player_client=mweb",
-        f"youtubepot-wpc:browser_path={browser}",
-    ]
+    (command,) = commands
+    assert "--extractor-args" not in command
+    assert command[command.index("--format") + 1] == (
+        "bestaudio[ext=m4a]/bestaudio/best"
+    )
+    assert "--extract-audio" in command
     assert archive.content == b"archived audio"
-    assert archive.extension == "m4a"
+    assert archive.media_type == "audio/mp4"
 
 
-def test_metadata_requests_do_not_launch_browser_po_token_provider(
+def test_a_failed_download_retries_once_on_a_newer_ytdlp(monkeypatch) -> None:
+    run, commands = _archive_run(failures=1)
+    monkeypatch.setattr("subprocess.run", run)
+    runtime = FakeRuntime(newer_release=True)
+    source = YtDlpSourceAdapter(runtime=runtime)  # type: ignore[arg-type]
+    candidate = source._candidate({"id": "video-archive", "title": "Archive"})
+
+    archive = source.archive(candidate)
+
+    assert archive.content == b"archived audio"
+    assert len(commands) == 2
+    assert commands[0][0] == runtime.executable
+    assert runtime.refreshes == [False, True]
+
+
+def test_a_failed_download_without_a_newer_ytdlp_is_reported(
     monkeypatch,
 ) -> None:
-    captured_command: list[str] = []
-
-    def successful_run(
-        command: list[str], **_kwargs
-    ) -> subprocess.CompletedProcess[str]:
-        captured_command.extend(command)
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            (
-                '{"channel_id":"UC_TEST","channel":"Test",'
-                '"channel_url":"https://www.youtube.com/@test"}'
-            ),
-            "",
-        )
-
-    monkeypatch.setattr("subprocess.run", successful_run)
+    run, commands = _archive_run(failures=1)
+    monkeypatch.setattr("subprocess.run", run)
     source = YtDlpSourceAdapter(
-        browser_executable=Path(
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        )
+        runtime=FakeRuntime(newer_release=False)  # type: ignore[arg-type]
+    )
+    candidate = source._candidate({"id": "video-archive", "title": "Archive"})
+
+    try:
+        source.archive(candidate)
+    except RuntimeError as error:
+        assert "Requested format is not available" in str(error)
+    else:
+        raise AssertionError("the download failure was hidden")
+    assert len(commands) == 1
+
+
+def _metadata_run(metadata: str, probes: list[list[str]] | None = None):
+    def run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        if command[0] == "ffprobe":
+            if probes is not None:
+                probes.append(command)
+            return subprocess.CompletedProcess(command, 0, "1834.5\n", "")
+        return subprocess.CompletedProcess(command, 0, metadata, "")
+
+    return run
+
+
+def test_any_link_yt_dlp_supports_resolves_to_one_episode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "subprocess.run",
+        _metadata_run(
+            '{"extractor_key":"ApplePodcasts","id":"1000000000001",'
+            '"title":"A fictional episode","duration":2700,'
+            '"timestamp":1790000000,"series":"Fictional Podcast",'
+            '"thumbnail":"https://podcasts.example.com/art.jpg",'
+            '"webpage_url":"https://podcasts.apple.com/us/podcast/x/id1?i=1"}'
+        ),
     )
 
-    source.resolve_channel("https://www.youtube.com/@test")
+    channel, episode = YtDlpSourceAdapter().resolve_source(
+        "https://podcasts.apple.com/us/podcast/x/id1?i=1"
+    )
 
-    assert "--extractor-args" not in captured_command
-
-
-def test_source_readiness_requires_an_executable_browser(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr("shutil.which", lambda _executable: "/bin/yt-dlp")
-    missing_browser = tmp_path / "missing-browser"
-    available_browser = tmp_path / "available-browser"
-    available_browser.write_text("browser")
-    available_browser.chmod(0o755)
-
-    assert not YtDlpSourceAdapter(
-        browser_executable=missing_browser
-    ).readiness()
-    assert YtDlpSourceAdapter(
-        browser_executable=available_browser
-    ).readiness()
+    assert episode is not None
+    assert episode.youtube_video_id == "applepodcasts:1000000000001"
+    assert episode.duration_seconds == 2700
+    assert episode.thumbnail_url == "https://podcasts.example.com/art.jpg"
+    assert episode.youtube_channel_id == channel.youtube_channel_id
+    assert channel.youtube_channel_id == "applepodcasts:Fictional_Podcast"
+    assert channel.title == "Fictional Podcast"
 
 
-def test_production_dependencies_use_the_configured_youtube_browser(
-    tmp_path: Path,
-) -> None:
-    browser = tmp_path / "configured-browser"
+def test_a_direct_audio_link_is_keyed_by_its_address(monkeypatch) -> None:
+    probes: list[list[str]] = []
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        "subprocess.run",
+        _metadata_run(
+            '{"extractor_key":"Generic","id":"episode","title":"episode",'
+            '"url":"https://media.example.com/episode.mp3",'
+            '"webpage_url":"https://media.example.com/episode.mp3"}',
+            probes,
+        ),
+    )
+
+    channel, episode = YtDlpSourceAdapter().resolve_source(
+        "https://media.example.com/episode.mp3"
+    )
+
+    assert episode is not None
+    assert episode.youtube_video_id.startswith("generic:")
+    assert episode.duration_seconds == 1834
+    assert probes[0][-1] == "https://media.example.com/episode.mp3"
+    assert channel.title == "media.example.com"
+
+
+def test_a_list_link_is_not_an_episode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "subprocess.run",
+        _metadata_run(
+            '{"_type":"playlist","extractor_key":"ApplePodcasts",'
+            '"id":"1","title":"Fictional Podcast","entries":[]}'
+        ),
+    )
+
+    _channel, episode = YtDlpSourceAdapter().resolve_source(
+        "https://podcasts.apple.com/us/podcast/x/id1"
+    )
+
+    assert episode is None
+
+
+def test_only_youtube_channels_can_be_followed() -> None:
+    try:
+        YtDlpSourceAdapter().resolve_channel(
+            "https://podcasts.apple.com/us/podcast/x/id1"
+        )
+    except ValueError as error:
+        assert "YouTube" in str(error)
+    else:
+        raise AssertionError("a non-YouTube channel was followed")
+
+
+def test_production_runs_yt_dlp_from_its_managed_install(tmp_path: Path) -> None:
     settings = TransPodcastSettings(
         _env_file=None,
         database_path=tmp_path / "transpodcast.sqlite3",
-        youtube_browser_executable=browser,
+        ytdlp_root=tmp_path / "tools" / "yt-dlp",
     )
 
     source = build_dependencies(settings).source
 
     assert isinstance(source, YtDlpSourceAdapter)
-    assert source.browser_executable == browser
+    assert source.runtime is not None
+    assert source.runtime.root == tmp_path / "tools" / "yt-dlp"
+    # Until the first install, the locked yt-dlp is used.
+    assert source.runtime.executable.endswith("/yt-dlp")
+
+
+def test_a_failed_lookup_reports_yt_dlp_errors_without_warnings(
+    monkeypatch,
+) -> None:
+    def run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "WARNING: [generic] Falling back on generic information extractor\n"
+            "ERROR: Unsupported URL: https://example.com/show",
+        )
+
+    monkeypatch.setattr("subprocess.run", run)
+
+    try:
+        YtDlpSourceAdapter().resolve_source("https://example.com/show")
+    except RuntimeError as error:
+        assert str(error) == (
+            "Source request failed: ERROR: Unsupported URL: "
+            "https://example.com/show"
+        )
+    else:
+        raise AssertionError("the unsupported link was accepted")

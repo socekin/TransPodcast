@@ -70,8 +70,12 @@ export function formatRate(rate: number): string {
 export function youtubeVideoId(url: string): string | null {
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.endsWith("youtu.be")) {
+    const host = parsed.hostname.replace(/^(www|m|music)\./, "");
+    if (host === "youtu.be") {
       return parsed.pathname.slice(1) || null;
+    }
+    if (host !== "youtube.com") {
+      return null;
     }
     if (parsed.searchParams.get("v")) {
       return parsed.searchParams.get("v");

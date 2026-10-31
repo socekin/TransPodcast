@@ -62,13 +62,15 @@ setups use `uv run transpodcast-modal-router`. Try the provider's own read-only
 status command. Authentication, budget, and capacity failures are intentionally
 not retried as generic transient work.
 
-## YouTube discovery or archive fails
+## A link is rejected or a source download fails
 
 Confirm the source is public, accessible without cookies, and authorized for
-your use. Source downloads need a local Chromium-based browser: install Google
-Chrome or set `TRANSPODCAST_YOUTUBE_BROWSER_EXECUTABLE` to another browser
-executable. Update the locked `yt-dlp` dependency if the source platform changed,
-then rerun the focused adapter tests. Do not work around access controls by
+your use. TransPodcast accepts a link only when yt-dlp can extract one episode
+from it; a channel, show, or playlist link, a page that needs an account, or a
+DRM-protected platform is rejected with yt-dlp's error. yt-dlp updates itself
+under `TRANSPODCAST_YTDLP_ROOT` once a day and retries a failed download once
+after an upgrade; `current/bin/yt-dlp --version` in that directory shows the
+active release. YouTube also needs Deno or Node.js on the worker's `PATH`. Do not work around access controls by
 committing cookies or account exports.
 
 ## The private feed returns 404

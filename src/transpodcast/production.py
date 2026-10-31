@@ -17,6 +17,7 @@ from transpodcast.adapters.speech import (
 )
 from transpodcast.adapters.telegram import TelegramBotAdapter
 from transpodcast.adapters.youtube import YtDlpSourceAdapter
+from transpodcast.adapters.ytdlp_runtime import YtDlpRuntime
 from transpodcast.config import TransPodcastSettings
 from transpodcast.database import Database
 from transpodcast.dependencies import AppDependencies, SpeakerMatchPolicy
@@ -59,11 +60,14 @@ def build_dependencies(
     return AppDependencies(
         database=database,
         source=YtDlpSourceAdapter(
-            executable=str(
-                Path(sys.executable).with_name("yt-dlp")
-            ),
             proxy_url=resolved.youtube_proxy_url,
-            browser_executable=resolved.youtube_browser_executable,
+            runtime=YtDlpRuntime(
+                resolved.ytdlp_root,
+                fallback_executable=str(
+                    Path(sys.executable).with_name("yt-dlp")
+                ),
+                proxy_url=resolved.youtube_proxy_url,
+            ),
         ),
         triage=AgentTriageAdapter(codex),
         translation=AgentTranslationAdapter(

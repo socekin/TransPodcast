@@ -127,12 +127,12 @@ starting the worker.
 committed example, issue, log, or screenshot. TransPodcast intentionally does
 not support importing browser cookies or authenticated/private videos.
 
-`TRANSPODCAST_YOUTUBE_BROWSER_EXECUTABLE` points to a local Chromium-based
-browser executable. Source media downloads use it to generate YouTube
-proof-of-origin tokens without cookies or a signed-in profile. The default is
-the Google Chrome executable on macOS; quote the value in `.env` because the
-path contains spaces. Setup Readiness reports the source adapter as unavailable
-when the executable is missing.
+`TRANSPODCAST_YTDLP_ROOT` (default `data/tools/yt-dlp`) is where yt-dlp
+installs and updates itself. The worker checks PyPI once a day, installs a
+newer release in its own virtual environment, and switches to it without
+interrupting a running download; the locked yt-dlp is used until the first
+install succeeds. Setup Readiness reports the source adapter as unavailable
+when no yt-dlp executable is found.
 
 ## Telegram
 

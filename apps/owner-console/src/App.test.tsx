@@ -273,7 +273,7 @@ describe("Adding an episode", () => {
     });
     visit("/");
     await userEvent.type(
-      await screen.findByLabelText("YouTube 单集链接"),
+      await screen.findByLabelText("节目链接"),
       "https://www.youtube.com/watch?v=newvideo001"
     );
     await userEvent.click(screen.getByRole("button", { name: "开始处理" }));
@@ -290,10 +290,99 @@ describe("Adding an episode", () => {
     expect(await screen.findByRole("heading", { name: "排队中" })).toBeInTheDocument();
   });
 
+  it("adds an episode from any link yt-dlp can download", async () => {
+    installApi({
+      "POST /api/v1/source-resolutions": () => ({
+        resolution_id: "res-2",
+        expires_at: "2026-11-01T00:00:00",
+        timings_ms: {},
+        existing_source_channel: null,
+        channel: {
+          avatar_url: "",
+          subscriber_count: null,
+          title: "Fictional Podcast",
+          url: "https://podcasts.example.com",
+          video_count: null,
+          youtube_channel_id: "applepodcasts:fictional"
+        },
+        requested_video: {
+          description: "",
+          duration_seconds: 2700,
+          language: "en",
+          platform: "applepodcasts",
+          published_at: "2026-10-30T00:00:00",
+          source_url: "https://podcasts.example.com/episode-1",
+          thumbnail_url: "https://podcasts.example.com/episode-1.jpg",
+          title: "A podcast-only episode",
+          youtube_video_id: "applepodcasts:1000000000001"
+        }
+      }),
+      "POST /api/v1/source-resolutions/res-2:import-video": () => ({
+        candidate_status: "processing",
+        candidate_video_id: 51,
+        episode_id: null,
+        processing_run_id: 51,
+        reused: false,
+        run_status: "pending_start",
+        source_channel: { created: true, id: 4, mode: "paused", title: "Fictional Podcast" },
+        youtube_video_id: "applepodcasts:1000000000001"
+      }),
+      "POST /api/v1/processing-runs/51:start": () => ({ id: 51, state: "queued" }),
+      "GET /api/v1/processing-runs/51": () =>
+        run({ id: 51, status: "queued", owner_state: "queued", title: "A podcast-only episode" })
+    });
+    visit("/");
+    await userEvent.type(
+      await screen.findByLabelText("节目链接"),
+      "https://podcasts.example.com/episode-1"
+    );
+    await userEvent.click(screen.getByRole("button", { name: "开始处理" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("A podcast-only episode")).toBeInTheDocument();
+    expect(dialog.querySelector(".ring-art-image")).toHaveAttribute(
+      "src",
+      "https://podcasts.example.com/episode-1.jpg"
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "开始处理" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/runs/51"));
+  });
+
+  it("recognises a non-YouTube episode already in the library by its address", async () => {
+    installApi();
+    const library = routes["GET /api/v1/episode-library"];
+    routes["GET /api/v1/episode-library"] = (body) => {
+      const value = library(body) as { items: ReturnType<typeof libraryItem>[] };
+      value.items.push(
+        libraryItem({
+          processing_run_id: 60,
+          episode_id: 60,
+          title: "Already here",
+          library_state: EpisodeLibraryState.PUBLISHED,
+          state: "published",
+          source_url: "https://podcasts.example.com/episode-9"
+        })
+      );
+      return value;
+    };
+    visit("/");
+    await userEvent.type(
+      await screen.findByLabelText("节目链接"),
+      "https://www.podcasts.example.com/episode-9/#listen"
+    );
+    await userEvent.click(screen.getByRole("button", { name: "开始处理" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("这一期已经在节目库里了。")).toBeInTheDocument();
+    expect(within(dialog).getByText("Already here")).toBeInTheDocument();
+    expect(calls.some((call) => call.path === "/api/v1/source-resolutions")).toBe(false);
+  });
+
   it("recognises an episode already in the library without looking it up", async () => {
     visit("/");
     await userEvent.type(
-      await screen.findByLabelText("YouTube 单集链接"),
+      await screen.findByLabelText("节目链接"),
       "https://youtu.be/example0001"
     );
     await userEvent.click(screen.getByRole("button", { name: "开始处理" }));

@@ -86,7 +86,7 @@ def test_a_channel_link_is_followed_with_channel_add(tmp_path) -> None:
     code, text = _run(client, "add", "https://www.youtube.com/@usefulshow")
 
     assert code == 1
-    assert "this is a channel link" in text
+    assert "this is a channel or list link" in text
     assert "transpodcast channel add https://www.youtube.com/@usefulshow" in text
 
     code, text = _run(

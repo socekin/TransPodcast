@@ -19,8 +19,8 @@ TransPodcast currently targets an always-on macOS host.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - Node.js 22 or newer and npm
 - [FFmpeg](https://ffmpeg.org/download.html)
-- Google Chrome or another Chromium-based browser, used locally to generate
-  YouTube proof-of-origin tokens for source downloads
+- [Deno](https://deno.com/) (yt-dlp's default JavaScript runtime) or Node.js
+  22+, which yt-dlp uses for YouTube pages
 
 Install the Xcode Command Line Tools first if they are missing:
 
@@ -176,7 +176,9 @@ experimentation. Do not import or process content you are not authorized to use.
 
 In TransPodcast Host:
 
-1. Paste a YouTube episode URL into the add field on the home screen and
+1. Paste an episode link (YouTube, a podcast page such as Apple Podcasts, an
+   audio file, or another site yt-dlp supports) into the add field on the
+   home screen and
    confirm. Processing starts right away; a link already in the library opens
    the existing episode instead.
 2. Follow progress on the Run page. Every step expands to its details.

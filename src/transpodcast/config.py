@@ -39,9 +39,8 @@ class TransPodcastSettings(BaseSettings):
     # CLI falls back to the shared interactive Keychain login.
     claude_oauth_token_path: Path = Path("data/secrets/claude-oauth-token")
     youtube_proxy_url: str = ""
-    youtube_browser_executable: Path = Path(
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    )
+    # yt-dlp downloads every source and follows its releases from here.
+    ytdlp_root: Path = Path("data/tools/yt-dlp")
     modal_command: str = "uv run transpodcast-modal-pipeline"
     modal_environment: str = "transpodcast"
     modal_l40s_usd_per_hour: float = Field(default=1.95, gt=0)

@@ -176,6 +176,27 @@ def seed_owner_read_performance_fixture(
                 )
 
 
+FICTIONAL_PODCAST_EPISODE_URL = "https://podcasts.example.com/episode-1"
+FICTIONAL_PODCAST_SHOW = ChannelResolution(
+    youtube_channel_id="applepodcasts:fictional-show",
+    title="Fictional Podcast",
+    canonical_url="https://podcasts.example.com",
+)
+# A non-YouTube episode as yt-dlp's Apple Podcasts extractor reports it.
+FICTIONAL_PODCAST_EPISODE = SourceCandidate(
+    youtube_video_id="applepodcasts:1000000000001",
+    title="A conversation that never happened",
+    description="A fictional podcast episode added by its link.",
+    duration_seconds=2700,
+    language="en",
+    published_at=datetime(2026, 10, 1, 9, 0, tzinfo=UTC),
+    source_url=FICTIONAL_PODCAST_EPISODE_URL,
+    captions=None,
+    youtube_channel_id="applepodcasts:fictional-show",
+    thumbnail_url="https://podcasts.example.com/episode-1.jpg",
+)
+
+
 class FakeSourceAdapter:
     """A production-shaped Source Adapter with deterministic behavior.
 
@@ -200,10 +221,14 @@ class FakeSourceAdapter:
     ) -> None:
         self.candidates = candidates
         self.archive_invocation_count = 0
+        self.downloader_refresh_count = 0
         self.operation_log: list[str] = []
 
     def readiness(self) -> bool:
         return True
+
+    def refresh_downloader(self) -> None:
+        self.downloader_refresh_count += 1
 
     def simulated_elapsed_ms(self) -> int:
         return sum(
@@ -213,6 +238,8 @@ class FakeSourceAdapter:
 
     def resolve_channel(self, url: str) -> ChannelResolution:
         self.operation_log.append("resolve_channel")
+        if url.startswith(FICTIONAL_PODCAST_EPISODE_URL):
+            raise ValueError("Only YouTube channels can be followed")
         return ChannelResolution(
             youtube_channel_id="UC_USEFUL_SHOW",
             title="Useful Show",
@@ -227,6 +254,8 @@ class FakeSourceAdapter:
         url: str,
     ) -> tuple[ChannelResolution, SourceCandidate | None]:
         self.operation_log.append("resolve_source")
+        if url.startswith(FICTIONAL_PODCAST_EPISODE_URL):
+            return FICTIONAL_PODCAST_SHOW, FICTIONAL_PODCAST_EPISODE
         channel = ChannelResolution(
             youtube_channel_id="UC_USEFUL_SHOW",
             title="Useful Show",
@@ -326,6 +355,8 @@ class FakeSourceAdapter:
 
     def video(self, url: str) -> SourceCandidate:
         self.operation_log.append("video")
+        if url.startswith(FICTIONAL_PODCAST_EPISODE_URL):
+            return FICTIONAL_PODCAST_EPISODE
         candidates = self.discover("UC_USEFUL_SHOW")
         matching = [
             candidate

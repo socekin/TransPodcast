@@ -199,6 +199,16 @@ class RecentVideoWindow:
     channel_avatar_url: str = ""
 
 
+def is_youtube_video_key(key: str) -> bool:
+    """A YouTube video keeps its bare ID; another platform's episode is
+    keyed ``platform:id`` (for example ``applepodcasts:1000000000001``)."""
+    return ":" not in key
+
+
+def source_platform(key: str) -> str:
+    return "youtube" if is_youtube_video_key(key) else key.split(":", 1)[0]
+
+
 @dataclass(frozen=True)
 class SourceCandidate:
     youtube_video_id: str
@@ -210,6 +220,8 @@ class SourceCandidate:
     source_url: str
     captions: str | None
     youtube_channel_id: str | None = None
+    # Shown while adding the episode; not stored with the Candidate Video.
+    thumbnail_url: str | None = None
     analysis_json: str | None = None
     source_archive: SourceArchive | None = None
     prior_preview_audio: bytes | None = None

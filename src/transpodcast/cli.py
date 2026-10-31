@@ -1,7 +1,8 @@
 """The ``transpodcast`` command: local Agents submit and follow episodes.
 
 Codex, Claude Code, Grok, and other local Agents run it when the Owner shares
-a YouTube podcast link with them. It talks only to the TransPodcast host's Control
+a podcast episode link with them (YouTube, a podcast page, or any other site
+yt-dlp supports). It talks only to the TransPodcast host's Control
 API: add one episode, follow a channel, read progress, and start a Run. A
 start spends Modal credit, so Agents start a Run only when the Owner asks
 them to in conversation. Deleting, reprocessing, and publishing stay in
@@ -82,8 +83,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="transpodcast",
         description=(
-            "Submit YouTube podcast episodes to TransPodcast for Mandarin "
-            "dubbing and follow their progress."
+            "Submit podcast episodes (YouTube or any site yt-dlp supports) "
+            "to TransPodcast for Mandarin dubbing and follow their progress."
         ),
     )
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
@@ -98,9 +99,11 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(required=True, metavar="command")
 
     add = commands.add_parser(
-        "add", parents=[json_option], help="add one episode by its YouTube link"
+        "add", parents=[json_option], help="add one episode by its link"
     )
-    add.add_argument("url", help="a YouTube video link")
+    add.add_argument(
+        "url", help="an episode link: YouTube, a podcast page, or an audio file"
+    )
     add.add_argument(
         "--from",
         dest="requested_by",
@@ -164,8 +167,8 @@ def _add_episode(
     video = resolution.get("requested_video")
     if video is None:
         raise CommandError(
-            "this is a channel link, not an episode. Run "
-            f"`transpodcast channel add {arguments.url}` to follow the channel."
+            "this is a channel or list link, not an episode. For a YouTube "
+            f"channel, run `transpodcast channel add {arguments.url}` to follow it."
         )
     imported = _request(
         http,

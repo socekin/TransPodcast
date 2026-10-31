@@ -79,6 +79,10 @@ class ProcessingWorker:
             else:
                 LOGGER.info("Maintenance completed: %s", maintenance_result)
                 self.next_maintenance_at = now + timedelta(days=1)
+        try:
+            self.service.refresh_source_downloader()
+        except Exception:
+            LOGGER.exception("yt-dlp update check failed; keeping the current one")
         if self._ready:
             enrichment = self.service.enrich_candidate_videos()
             if enrichment["enriched"] or enrichment["failed"]:

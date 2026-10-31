@@ -23,7 +23,8 @@
 </p>
 
 TransPodcast is designed for listeners who want to follow complete long-form
-English podcasts in Mandarin. It imports YouTube podcast URLs, recognizes
+English podcasts in Mandarin. It imports episode links from YouTube, Apple
+Podcasts and other podcast pages, or audio files, recognizes
 multiple speakers, translates the full conversation, renders Mandarin speech,
 and produces a private podcast that can be followed in Apple Podcasts and
 other podcast clients.
@@ -73,7 +74,11 @@ other podcast clients.
 - **✂️ Ad and opening-highlight removal:** Exclude clearly separable third-party
   paid advertisements and assembled opening highlights from the final Mandarin
   audio. Uncertain material is retained to avoid removing editorial content.
-- **🖥️ Local web interface:** Paste a YouTube episode URL and processing
+- **🔗 Any episode link:** yt-dlp decides whether a link can be downloaded:
+  YouTube, Apple Podcasts and other podcast pages, direct audio files, and the
+  other sites yt-dlp supports. yt-dlp updates itself to each new release, and
+  YouTube downloads need no browser. Following a channel stays YouTube-only.
+- **🖥️ Local web interface:** Paste an episode link and processing
   starts. The Run page shows every step, and a step that needs your decision
   opens on its own. The built-in player highlights the transcript as it plays,
   with one 0.75×–2× speed for every episode.
@@ -115,7 +120,7 @@ transcripts, and translations.
 | Local host | An always-on macOS device | Runs TransPodcast, stores local data, and serves the management interface |
 | Local toolchain | Xcode Command Line Tools (providing Git and make), Python 3.12–3.14, [uv](https://docs.astral.sh/uv/), Node.js 22+, npm, and FFmpeg | Installs, builds, and runs the project |
 | Agent CLI (at least one) | An installed and authenticated [Codex CLI](https://developers.openai.com/codex/cli) (default) or the optional [Claude Code](https://code.claude.com/docs/en/setup) | Performs episode selection, translation, review, speaker-ownership review, and episode copy generation |
-| Browser | Google Chrome or another Chromium-based browser | Generates YouTube proof-of-origin tokens locally when downloading source audio |
+| JavaScript runtime | [Deno](https://deno.com/) (yt-dlp's default) or Node.js 22+ | Used by yt-dlp for YouTube pages |
 | GPU speech service | A Modal account | Runs speech recognition, speaker analysis, and Mandarin speech synthesis |
 | Private podcast delivery | A Cloudflare account, R2 bucket, Worker, and stable HTTPS domain | Hosts the protected RSS feed and full episode audio |
 | Podcast client | Apple Podcasts or another client that supports adding a feed by URL | Follows the private Mandarin podcast |
@@ -174,8 +179,9 @@ remaining service configuration in [Getting Started](docs/getting-started.md).
 2. Follow [Deployment](docs/deployment/README.md) to configure the Mac running
    TransPodcast, the Modal speech applications, and the Cloudflare publication
    Worker required for remote listening.
-3. Paste a YouTube episode URL for learning or research on the TransPodcast
-   Host home screen; processing starts once you confirm.
+3. Paste an episode link for learning or research (YouTube, a podcast page,
+   or an audio file) on the TransPodcast Host home screen; processing starts
+   once you confirm.
 4. Follow stage progress on the Run page; when a Run needs your decision, the
    Run page opens that step.
 5. Listen to the complete private preview and review translation, speakers,

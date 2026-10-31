@@ -80,6 +80,8 @@ from transpodcast.domain import (
     TriageDecision,
     TriageResult,
     VoiceReferencePreview,
+    is_youtube_video_key,
+    source_platform,
 )
 from transpodcast.errors import (
     DiscoveryAlreadyRunningError,
@@ -1638,7 +1640,13 @@ class TransPodcastService:
                     youtube_channel_id=record.channel.youtube_channel_id,
                     title=record.channel.title,
                     canonical_url=record.channel.canonical_url,
-                    mode=ChannelMode.AGENT_FILTERING.value,
+                    # Only a YouTube channel can be followed; another
+                    # platform's show only groups the episodes added by link.
+                    mode=(
+                        ChannelMode.AGENT_FILTERING.value
+                        if is_youtube_video_key(requested_video.youtube_video_id)
+                        else ChannelMode.PAUSED.value
+                    ),
                     avatar_url=record.channel.avatar_url,
                     created_at=now,
                 )
@@ -1930,6 +1938,8 @@ class TransPodcastService:
                 )
             ).all()
             for channel in channels:
+                if not is_youtube_video_key(channel.youtube_channel_id):
+                    continue
                 for source_candidate in self.dependencies.source.discover(
                     channel.youtube_channel_id
                 ):
@@ -2389,6 +2399,10 @@ class TransPodcastService:
                 run.status = "queued"
             return {"started": len(runs)}
 
+    def refresh_source_downloader(self) -> None:
+        """Keep yt-dlp on its latest release; checked at most daily."""
+        self.dependencies.source.refresh_downloader()
+
     def enrich_candidate_videos(self, limit: int = 3) -> dict[str, int]:
         """Complete deferred metadata for explicitly imported videos.
 
@@ -2773,8 +2787,8 @@ class TransPodcastService:
                     session,
                     run,
                     stage="source_archive",
-                    version="yt-dlp-source-v1",
-                    provider="youtube",
+                    version="yt-dlp-source-v2",
+                    provider=source_platform(candidate.youtube_video_id),
                     model=None,
                     input_hash=_content_hash(
                         {
@@ -10612,6 +10626,8 @@ def _requested_video_payload(
 ) -> dict[str, object]:
     return {
         "youtube_video_id": candidate.youtube_video_id,
+        "platform": source_platform(candidate.youtube_video_id),
+        "thumbnail_url": candidate.thumbnail_url,
         "title": candidate.title,
         "description": candidate.description[:500],
         "duration_seconds": candidate.duration_seconds,

@@ -25,8 +25,8 @@ Before deploying real processing:
 - The selected Agent CLI is installed and authenticated for the same macOS
   user that runs TransPodcast: `codex --version` and `codex login status` for
   Codex, or `claude --version` and `claude auth status` for Claude Code.
-- Google Chrome or another Chromium-based browser is installed for YouTube
-  source downloads.
+- Deno (or Node.js 22+) is on the services' `PATH` for yt-dlp's YouTube
+  support.
 - Modal CLI is authenticated to the intended workspace.
 - Cloudflare and R2 are configured only if remote private listening is needed.
 - Feed tokens, account IDs, API tokens, and private URLs are kept out of Git and
