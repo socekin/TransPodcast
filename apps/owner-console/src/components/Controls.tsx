@@ -13,7 +13,7 @@ import { formatRate } from "../lib/format";
 import { PLAYBACK_RATES } from "../lib/player";
 import { followLink, type Route, useNavigate, pathForRoute } from "../lib/routing";
 import { cn } from "../lib/utils";
-import { BackIcon, MoreIcon } from "./Icons";
+import { BackIcon, GaugeIcon, MoreIcon } from "./Icons";
 
 /** Close a popover on an outside press or Escape. */
 function useDismiss(
@@ -98,6 +98,84 @@ export function SpeedMenu({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** Speed control under the episode player's play button. The pill opens in
+ * place into a row of rates, so choosing a speed covers nothing. */
+export function SpeedBar({
+  rate,
+  onChange
+}: {
+  rate: number;
+  onChange: (rate: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const container = useRef<HTMLDivElement | null>(null);
+  const pill = useRef<HTMLButtonElement | null>(null);
+  const selected = useRef<HTMLButtonElement | null>(null);
+  const opened = useRef(false);
+  useDismiss(open, () => setOpen(false), container);
+
+  useEffect(() => {
+    if (open) {
+      opened.current = true;
+      selected.current?.focus();
+    } else if (opened.current && document.activeElement === document.body) {
+      // The focused rate unmounted with the row; hand focus back to the pill.
+      pill.current?.focus();
+    }
+  }, [open]);
+
+  return (
+    <div className="speed-bar" ref={container}>
+      {open ? (
+        <div
+          className="speed-bar-rates"
+          role="group"
+          aria-label={copy.speed.global}
+          title={copy.speed.global}
+        >
+          <button
+            type="button"
+            className="speed-bar-close"
+            aria-label={copy.speed.collapse}
+            onClick={() => setOpen(false)}
+          >
+            <GaugeIcon size={17} />
+          </button>
+          <div className="speed-bar-options">
+            {PLAYBACK_RATES.map((value) => (
+              <button
+                key={value}
+                ref={value === rate ? selected : undefined}
+                type="button"
+                aria-pressed={value === rate}
+                className={cn("speed-bar-option", value === rate && "is-selected")}
+                onClick={() => {
+                  onChange(value);
+                  setOpen(false);
+                }}
+              >
+                {formatRate(value)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <button
+          ref={pill}
+          type="button"
+          className="speed-bar-pill"
+          aria-label={copy.speed.label(formatRate(rate))}
+          aria-expanded={false}
+          onClick={() => setOpen(true)}
+        >
+          <GaugeIcon size={17} />
+          {formatRate(rate)}
+        </button>
+      )}
     </div>
   );
 }

@@ -93,6 +93,7 @@ export function RingArt({
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [dot, setDot] = useState(() => ringPoint(null, progress ?? 0));
   const dragging = useRef(false);
+  const played = Math.min(Math.max(progress ?? 0, 0), 1) * 100;
 
   useLayoutEffect(() => {
     setDot(ringPoint(pathRef.current, progress ?? 0));
@@ -176,7 +177,19 @@ export function RingArt({
       }}
     >
       <svg className="ring-art-line" viewBox="0 0 100 100" aria-hidden="true">
-        <path ref={pathRef} d={RING_PATH} />
+        <path
+          ref={pathRef}
+          className={progress !== null ? "ring-art-track" : undefined}
+          d={RING_PATH}
+        />
+        {progress !== null ? (
+          <path
+            className="ring-art-played"
+            d={RING_PATH}
+            pathLength={100}
+            strokeDasharray={`${played} 100`}
+          />
+        ) : null}
       </svg>
       {progress !== null ? (
         <span

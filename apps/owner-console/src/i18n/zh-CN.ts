@@ -73,7 +73,8 @@ export const copy = {
     cycleLabel: (rate: string) => `播放速度 ${rate}，点按切换`,
     global: "播放速度 · 对所有节目生效",
     clip: "单句试听默认 1×，只对这一句生效",
-    group: "播放速度"
+    group: "播放速度",
+    collapse: "收起播放速度"
   },
   episode: {
     listening: "正在收听",

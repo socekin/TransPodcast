@@ -398,17 +398,36 @@ describe("Playback speed", () => {
   it("applies the chosen speed to every episode and remembers it", async () => {
     visit("/episodes/8");
     await userEvent.click(await screen.findByRole("button", { name: "播放速度 1×" }));
-    const menu = screen.getByRole("group", { name: "播放速度" });
-    expect(within(menu).getByText("播放速度 · 对所有节目生效")).toBeInTheDocument();
-    await userEvent.click(within(menu).getByRole("button", { name: "1.5×" }));
+    const rates = screen.getByRole("group", { name: "播放速度 · 对所有节目生效" });
+    expect(within(rates).getByRole("button", { name: "1×" })).toHaveFocus();
+    await userEvent.click(within(rates).getByRole("button", { name: "1.5×" }));
 
-    expect(screen.getByRole("button", { name: "播放速度 1.5×" })).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "播放速度" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "播放速度 1.5×" })).toHaveFocus();
+    expect(
+      screen.queryByRole("group", { name: "播放速度 · 对所有节目生效" })
+    ).not.toBeInTheDocument();
     expect(window.localStorage.getItem("transpodcast.playbackRate")).toBe("1.5");
 
     await userEvent.click(screen.getByRole("button", { name: "试听" }));
     const audio = screen.getByTestId("global-audio") as HTMLAudioElement;
     expect(audio.playbackRate).toBe(1.5);
+  });
+
+  it("folds the speed row back without changing the speed", async () => {
+    visit("/episodes/8");
+    await userEvent.click(await screen.findByRole("button", { name: "播放速度 1×" }));
+    await userEvent.click(screen.getByRole("button", { name: "收起播放速度" }));
+    expect(
+      screen.queryByRole("group", { name: "播放速度 · 对所有节目生效" })
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "播放速度 1×" }));
+    await userEvent.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("group", { name: "播放速度 · 对所有节目生效" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "播放速度 1×" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("transpodcast.playbackRate")).toBeNull();
   });
 
   it("lets the mini player step through speeds", async () => {

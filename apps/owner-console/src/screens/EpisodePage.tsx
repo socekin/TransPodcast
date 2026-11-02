@@ -6,7 +6,7 @@ import {
   MixedHeading,
   MoreMenu,
   PageHeader,
-  SpeedMenu
+  SpeedBar
 } from "../components/Controls";
 import {
   CheckIcon,
@@ -171,16 +171,9 @@ function EpisodeView({
       <PageHeader title={pageTitle} right={<MoreMenu items={menu} />} />
       <div className="detail-grid">
         <section className="player-column" aria-label={copy.actions.play}>
-          <div className="player-meta">
-            <p className="player-clock">
-              <span>{formatClock(position)}</span> | {formatClock(totalSeconds)}
-            </p>
-            <SpeedMenu
-              rate={player.rate}
-              onChange={player.setRate}
-              note={copy.speed.global}
-            />
-          </div>
+          <p className="player-clock">
+            <span>{formatClock(position)}</span> | {formatClock(totalSeconds)}
+          </p>
           <RingArt
             src={episode.artwork_url}
             progress={progress}
@@ -268,6 +261,7 @@ function EpisodeView({
               ) : null}
             </div>
           )}
+          <SpeedBar rate={player.rate} onChange={player.setRate} />
           {kind === "removed" ? (
             <p className="muted-note">
               {episode.recoverable

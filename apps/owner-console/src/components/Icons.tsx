@@ -89,6 +89,13 @@ export const CheckIcon = (props: IconProps) => (
   </Stroke>
 );
 
+export const GaugeIcon = (props: IconProps) => (
+  <Stroke strokeWidth={2} {...props}>
+    <path d="M4.9 19a9 9 0 1 1 14.2 0" />
+    <path d="M12 14l4-5" />
+  </Stroke>
+);
+
 export const AlertIcon = (props: IconProps) => (
   <Stroke {...props}>
     <circle cx="12" cy="12" r="9" />
