@@ -1,6 +1,6 @@
 [project]
 name = "transpodcast"
-version = "0.4.0"
+version = "0.4.1"
 description = "A private, local-first podcast translation service."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"

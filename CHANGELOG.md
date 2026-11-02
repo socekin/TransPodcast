@@ -6,6 +6,17 @@ uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-02
+
+### Changed
+
+- The episode player's ring shows how far playback has gone: the played
+  part is a heavy black stroke and the rest a thin grey line, with a ringed
+  dot at the current position.
+- Playback speed moves under the play button. Its pill opens in place into a
+  row of all speeds, so choosing one covers nothing; the choice still
+  applies to every episode.
+
 ## [0.4.0] - 2026-10-31
 
 ### Changed
@@ -262,7 +273,8 @@ uses semantic versioning for public releases.
 - CI includes deterministic tests, documentation validation, secret scanning,
   dependency audits, and CodeQL analysis.
 
-[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/socekin/TransPodcast/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/socekin/TransPodcast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/socekin/TransPodcast/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/socekin/TransPodcast/compare/v0.1.0...v0.2.0
