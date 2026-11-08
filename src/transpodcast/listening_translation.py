@@ -115,7 +115,7 @@ LISTENING_REVIEW_INSTRUCTIONS = (
     "Independently review this completed TransPodcast translation. Read "
     "AGENTS.md, episode.json, glossary.json, source/segments.json, and every "
     "translation/part-*.md file. Check omissions, names, acronyms, numbers, "
-    "terminology, speaker alignment, conversational meaning, and the "
+    "years, terminology, speaker alignment, conversational meaning, and the "
     "Listening Rules in AGENTS.md. Verify and correct glossary.json and keep "
     "every TARGET consistent with it. Correct only defective TARGET lines. "
     "Complete verdict.md in the format documented in AGENTS.md: approval, "
@@ -163,8 +163,13 @@ hears it once without seeing any text. Write for the ear.
    informality, like a real person talking (口语化, not written prose). Keep
    every point; never summarize or drop content.
 2. **Spoken numerals.** Write numbers the way they are said: 十二亿, 一点二亿,
-   百分之三十, 十六家, 两三个, 五分钟, 二〇二六年, 全天候 for 24/7. Keep digits
-   only inside a name or a version label, such as GPT-5 or 6.1.
+   百分之三十, 十六家, 两三个, 五分钟, 全天候 for 24/7. Keep digits only
+   inside a name or a version label, such as GPT-5 or 6.1.
+   - Write a calendar year digit by digit, with 零 for zero: 二零二六年,
+     二零零八年, 一九九九年. Never write 〇: the voice skips it.
+   - When the speaker shortens a calendar year ('25, "in 24", "twenty
+     seven"), write the full year, 二零二五年, so it is not heard as a
+     duration. Durations and decades stay as said: 过去二十五年, 九十年代.
 3. **No parenthetical glosses.** Never put brackets of any kind in a TARGET,
    such as 答案引擎优化（AEO） or 智能体（agent）. Choose one spoken form. When
    listeners need help with an unfamiliar name, say it inside the sentence
@@ -364,7 +369,8 @@ out. Set `status` to `accepted` when complete.
 
 LISTENING_SEGMENT_RULES = (
     "Write for the ear in casual spoken Mandarin: spoken numerals except in "
-    "names and version labels, no brackets or glosses, a dash or ellipsis "
+    "names and version labels, calendar years in full and digit by digit "
+    "with 零 (二零二五年, never 〇), no brackets or glosses, a dash or ellipsis "
     "only when the speaker truly trails off, no spaces between Chinese and "
     "English words, and every name exactly in the written form given in the "
     "glossary."

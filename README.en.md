@@ -54,8 +54,9 @@ other podcast clients.
   sentence so conversations sound natural.
 - **✍️ Translation and review:** Translate with full-episode context and run an
   independent review for terminology, numbers, meaning, and spoken style. The
-  listening-oriented translation policy writes numbers as they are spoken and
-  keeps names consistent through a project glossary.
+  listening-oriented translation policy writes numbers as they are spoken,
+  writes calendar years in full and digit by digit (二零二五年) so the voice
+  reads them correctly, and keeps names consistent through a project glossary.
 - **🔁 Listening audit and automatic re-render:** After rendering, every unit is
   checked for truncation, insertions, English leakage, speech rate, long
   pauses, and voice drift. Severe findings are re-rendered once automatically;

@@ -411,7 +411,9 @@ back-transcription, speech-rate and silence bounds, and voice consistency. A
 hard finding is re-rendered once; a remaining one requires the Owner's Review
 Queue decision. Soft findings are listed only. On a short line, a
 back-transcription mismatch is hard only when the line's speech is also
-missing, far too long, or broken by a long silence.
+missing, far too long, or broken by a long silence. The reference is the
+speech text the voice was given (a target's 〇 is read as 零), and a
+four-digit year is compared digit by digit.
 _Avoid_: human review, Quality Gate replacement, translation review
 
 **Speaker Ownership Risk Region**:

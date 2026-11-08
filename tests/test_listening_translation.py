@@ -390,6 +390,9 @@ def test_listening_instructions_carry_the_f1_rules() -> None:
     for required in (
         "Write for the ear",
         "Spoken numerals",
+        "二零二六年",
+        "Never write 〇",
+        "write the full year",
         "No parenthetical glosses",
         "only for a real trail-off",
         "Twitter → 推特",

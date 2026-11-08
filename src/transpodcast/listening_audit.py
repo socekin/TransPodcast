@@ -26,7 +26,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-LISTENING_AUDIT_POLICY_VERSION = "listening-audit-v2"
+from transpodcast.speech_text import speech_text
+
+LISTENING_AUDIT_POLICY_VERSION = "listening-audit-v3"
 
 Severity = Literal["hard", "soft"]
 FindingKind = Literal[
@@ -141,6 +143,7 @@ _DIGITS = "零一二三四五六七八九"
 _SMALL_UNITS = ("", "十", "百", "千")
 _LARGE_UNITS = ("", "万", "亿", "万亿")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_YEAR = re.compile(r"(?<![\d.])(\d{4})(?=\s*年)")
 _PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _LATIN_TOKEN = re.compile(r"[a-z][a-z0-9'.+-]*")
 _LATIN_RUN = re.compile(r"[a-z][a-z0-9'.+-]*(?:[\s,]+[a-z][a-z0-9'.+-]*)*")
@@ -204,8 +207,15 @@ def _decimal_reading(text: str) -> str:
 
 
 def normalize_spoken_text(value: str) -> str:
-    """Return comparable spoken characters: hanzi, Latin letters, digits read."""
-    text = unicodedata.normalize("NFKC", value).lower()
+    """Return comparable spoken characters: hanzi, Latin letters, digits read.
+
+    The reference is the speech text the voice was given, and a four-digit
+    year is read digit by digit, as both the voice and the listener say it.
+    """
+    text = speech_text(unicodedata.normalize("NFKC", value).lower())
+    text = _YEAR.sub(
+        lambda m: "".join(_DIGITS[int(d)] for d in m.group(1)), text
+    )
     text = _PERCENT.sub(lambda m: "百分之" + _decimal_reading(m.group(1)), text)
     text = _NUMBER.sub(_number_reading, text)
     return "".join(_SPOKEN_CHARACTER.findall(text))

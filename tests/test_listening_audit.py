@@ -33,6 +33,9 @@ def observation(**overrides: object) -> UnitObservation:
         ("5.90 美元", "五点九零美元"),
         ("30%", "百分之三十"),
         ("用 ChatGPT 写代码！", "用chatgpt写代码"),
+        ("二〇二五年", "二零二五年"),
+        ("1999年", "一九九九年"),
+        ("2025 年夏天", "二零二五年夏天"),
     ],
 )
 def test_normalization_reads_numbers_and_drops_punctuation(
@@ -43,6 +46,12 @@ def test_normalization_reads_numbers_and_drops_punctuation(
 
 def test_spoken_and_written_numbers_compare_equal() -> None:
     assert character_error_rate("为12亿人打造产品", "为十二亿人打造产品") == 0.0
+    assert character_error_rate("二〇二五年夏天", "2025年夏天") == 0.0
+
+
+def test_a_year_that_loses_its_zero_is_a_transcript_error() -> None:
+    assert character_error_rate("你看二〇二五年夏天", "你看二二五年夏天") > 0
+    assert character_error_rate("你看二〇二五年夏天", "你看二十五年夏天") > 0
 
 
 def test_clean_unit_has_no_findings() -> None:

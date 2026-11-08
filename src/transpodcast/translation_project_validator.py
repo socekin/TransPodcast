@@ -53,6 +53,8 @@ _CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 _CJK_PUNCTUATION = "\u3000-\u303f\uff00-\uffef"
 _CJK_CHARACTER = re.compile(f"[{_CJK}]")
 _DIGIT = re.compile(r"\d")
+# IDEOGRAPHIC NUMBER ZERO, which the speech voices skip.
+_CIRCLE_ZERO = "〇"
 _LATIN_WORD = r"[A-Za-z][A-Za-z0-9]*(?:[.'\u2019+#&-][A-Za-z0-9]+)*(?:\+\+|#)?"
 _LATIN_SPAN = re.compile(rf"{_LATIN_WORD}(?: {_LATIN_WORD})*")
 _LATIN_PART = re.compile(r"[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+|[A-Z]")
@@ -438,6 +440,13 @@ def _check_target_text(
         report.warning(
             "latin_spacing",
             f"{where}: remove spaces between Chinese text and English words",
+            (segment_id,),
+        )
+    if _CIRCLE_ZERO in text:
+        report.error(
+            "circle_zero",
+            f"{where}: write 零 instead of {_CIRCLE_ZERO}, as in "
+            f"二零二五年; the voice skips {_CIRCLE_ZERO}",
             (segment_id,),
         )
     numerals = [

@@ -6,6 +6,20 @@ uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Mandarin voice reads calendar years correctly. A year written with 〇
+  (二〇二五年) lost its zero and was heard as 二二五年 or 二十五年; every unit
+  now goes to the voice with 零 in its place, and the clip cache keys on that
+  speech text, so only the affected units re-render.
+- The listening translation policy writes calendar years in full and digit by
+  digit with 零 (二零二五年), and writes a shortened year such as '25 in full
+  so it is not heard as a duration. The review checks years, and the project
+  validator rejects 〇 in a target.
+- The Listening Audit compares a back-transcription against the speech text
+  and reads a four-digit year digit by digit, so a dropped zero is a finding
+  (`listening-audit-v3`).
+
 ## [0.4.1] - 2026-11-02
 
 ### Changed

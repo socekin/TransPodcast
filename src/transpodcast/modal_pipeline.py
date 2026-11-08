@@ -97,6 +97,7 @@ from transpodcast.speaker_consolidation import (
     consolidate_episode_speakers,
     select_voice_references,
 )
+from transpodcast.speech_text import speech_text, speech_units
 from transpodcast.unit_clip_store import (
     UnitClipEntry,
     UnitClipManifestReference,
@@ -1278,7 +1279,7 @@ def render(request: dict[str, Any], output_root: Path) -> dict[str, Any]:
                 "render",
                 source_wav.read_bytes(),
                 speaker_references,
-                selected_render_plan,
+                speech_units(selected_render_plan),
                 emotion_alpha=emotion_alpha,
                 seed=42,
             )
@@ -1374,7 +1375,7 @@ def render(request: dict[str, Any], output_root: Path) -> dict[str, Any]:
                     "render",
                     source_wav.read_bytes(),
                     speaker_references,
-                    units,
+                    speech_units(units),
                     emotion_alpha=emotion_alpha,
                     seed=seed,
                 )
@@ -2426,7 +2427,9 @@ def _render_sharded(
     output_prefix = f"render/{source_checksum}/{render_version}"
     shards = [
         shard
-        for shard in split_render_plan(render_plan, RENDER_SHARD_COUNT)
+        for shard in split_render_plan(
+            speech_units(render_plan), RENDER_SHARD_COUNT
+        )
         if shard
     ]
     shard_results: list[dict[str, Any]] = []
@@ -2573,7 +2576,7 @@ def _legacy_render_cache_identity(
         {
             "segments": [
                 {
-                    "target_text": str(item["target_text"]),
+                    "target_text": speech_text(str(item["target_text"])),
                     "speaker_id": str(item["speaker_id"]),
                     "parent_segment_id": str(item["parent_segment_id"]),
                     "source_segment_id": str(item["source_segment_id"]),
@@ -2634,7 +2637,9 @@ def rhythm_unit_tts_identities(
     explicit reference exists. Pause fields, internal-split flags, and every
     Rhythm Policy value are excluded so assembly changes reuse the clips.
     ``unit_seeds`` names the units that a Listening Audit retry re-rendered
-    with another seed; every other unit hashes the default seed.
+    with another seed; every other unit hashes the default seed. The text is
+    the speech text the voice reads, so a speech-text fix re-renders exactly
+    the units it changes.
     """
     seeds = unit_seeds or {}
     speaker_hashes = {
@@ -2654,7 +2659,7 @@ def rhythm_unit_tts_identities(
                 "render_unit_id": str(item["segment_id"]),
                 "parent_segment_id": str(item["parent_segment_id"]),
                 "source_segment_id": str(item["source_segment_id"]),
-                "target_text": str(item["target_text"]),
+                "target_text": speech_text(str(item["target_text"])),
                 "speaker_id": speaker_id,
                 "speaker_reference_sha256": speaker_hashes.get(speaker_id, ""),
                 "emotion_reference_sha256": (

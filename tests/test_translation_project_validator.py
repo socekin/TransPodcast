@@ -350,6 +350,15 @@ def test_numerals_spacing_and_trail_off_warn(tmp_path: Path) -> None:
     assert by_code["trail_off"].segment_ids == ("seg-0004",)
 
 
+def test_circle_zero_is_an_error(tmp_path: Path) -> None:
+    targets = {**TARGETS, "seg-0001": "你看二〇二五年夏天，我们签了十六家合作伙伴。"}
+    report = validate_project(_project(tmp_path, review=False, targets=targets))
+
+    errors = [item for item in report.errors if item.code == "circle_zero"]
+    assert [item.segment_ids for item in errors] == [("seg-0001",)]
+    assert "零" in errors[0].message
+
+
 def test_glossary_must_be_complete_and_consistent(tmp_path: Path) -> None:
     pending = validate_project(
         _project(tmp_path / "pending", review=False, glossary=GLOSSARY_SKELETON)

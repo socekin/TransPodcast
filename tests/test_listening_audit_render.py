@@ -281,7 +281,7 @@ def test_complete_render_audits_every_clip_in_one_call_per_model(
         (16_000, 1, 2)
     }
     payload = _audit(result)
-    assert payload["policy_version"] == "listening-audit-v2"
+    assert payload["policy_version"] == "listening-audit-v3"
     assert payload["status"] == "complete"
     assert payload["scope"] == "episode"
     assert payload["unit_count"] == len(_SEGMENTS)
@@ -660,7 +660,7 @@ def test_readiness_reports_missing_audit_methods_without_blocking(
     assert response["ready"] is True
     assert response["listening_audit"] == {
         "available": False,
-        "policy_version": "listening-audit-v2",
+        "policy_version": "listening-audit-v3",
         "missing_methods": ["Qwen3Transcriber.transcribe_clips"],
     }
     deployed["Qwen3Transcriber"].add("transcribe_clips")
