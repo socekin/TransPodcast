@@ -6,6 +6,8 @@ uses semantic versioning for public releases.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-08
+
 ### Fixed
 
 - The Mandarin voice reads calendar years correctly. A year written with 〇
@@ -287,7 +289,8 @@ uses semantic versioning for public releases.
 - CI includes deterministic tests, documentation validation, secret scanning,
   dependency audits, and CodeQL analysis.
 
-[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/socekin/TransPodcast/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/socekin/TransPodcast/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/socekin/TransPodcast/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/socekin/TransPodcast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/socekin/TransPodcast/compare/v0.2.0...v0.3.0
